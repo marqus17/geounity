@@ -98,26 +98,29 @@ namespace GeoUnity.World3D
                     _worldRoot = null;
                 }
 
-                // Download DEM, Orthophoto, and Buildings in parallel
+                // Download DEM, Orthophoto, Buildings, and Vegetation zones in parallel
                 var demTask = _dataClient.DownloadElevationGridAsync(sector, resolution: 257);
                 var orthoTask = _dataClient.DownloadOrthophotoAsync(sector, size: 2048);
                 var buildingsTask = _dataClient.DownloadBuildingsAsync(sector, maxFeatures: 12000, count =>
                 {
                     SetLoading(true, $"Téléchargement BD TOPO... ({count} bâtiments reçus)");
                 });
+                var vegetationTask = _dataClient.DownloadVegetationAsync(sector, maxFeatures: 2000);
 
-                await Task.WhenAll(demTask, orthoTask, buildingsTask);
+                await Task.WhenAll(demTask, orthoTask, buildingsTask, vegetationTask);
 
                 var grid = demTask.Result;
                 var ortho = orthoTask.Result;
                 var buildings = buildingsTask.Result;
+                var vegetation = vegetationTask.Result;
 
-                SetLoading(true, $"Génération 3D ({buildings.Count} bâtiments + terrain RGE ALTI)...");
+                SetLoading(true, $"Génération 3D ({buildings.Count} bâtiments + {vegetation.Count} zones boisées)...");
                 await Task.Yield();
 
                 _worldRoot = new GameObject($"GeoWorld_{Math.Round(sector.CenterLambertX)}_{Math.Round(sector.CenterLambertY)}");
                 TerrainMeshBuilder.Build(sector, grid, ortho, _worldRoot.transform);
                 BuildingMeshBuilder.Build(sector, grid, buildings, _worldRoot.transform);
+                VegetationBuilder.Build(sector, grid, vegetation, _worldRoot.transform, out int treeCount);
 
                 float centerHeight = grid.SampleHeight(sector.CenterLambertX, sector.CenterLambertY) - grid.MinElevation;
 
@@ -135,7 +138,7 @@ namespace GeoUnity.World3D
                 {
                     worldInfoText.text =
                         $"Secteur 2 km × 2 km  |  {sector.CenterLat:F4}° N, {sector.CenterLon:F4}° E\n" +
-                        $"Relief RGE ALTI : {grid.MinElevation:F0} m – {grid.MaxElevation:F0} m  |  Bâtiments BD TOPO : {buildings.Count}\n" +
+                        $"Relief : {grid.MinElevation:F0}–{grid.MaxElevation:F0} m  |  Bâtiments : {buildings.Count}  |  Arbres : {treeCount}\n" +
                         $"Clic gauche / ZQSD : Déplacer  ·  Clic droit : Orbiter  ·  Molette : Zoom  ·  R : Recentrer";
                 }
 
@@ -143,7 +146,7 @@ namespace GeoUnity.World3D
                 if (mapSelectorCanvas != null) mapSelectorCanvas.SetActive(false);
                 if (worldHudCanvas != null) worldHudCanvas.SetActive(true);
 
-                Debug.Log($"[GeoWorldManager] Built 3D sector: {buildings.Count} buildings, elev {grid.MinElevation:F1}m..{grid.MaxElevation:F1}m.");
+                Debug.Log($"[GeoWorldManager] Built 3D sector: {buildings.Count} buildings, {treeCount} trees ({vegetation.Count} zones), elev {grid.MinElevation:F1}m..{grid.MaxElevation:F1}m.");
             }
             catch (Exception ex)
             {

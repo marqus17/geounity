@@ -18,15 +18,18 @@ namespace GeoUnity.World3D
             public readonly string Name;
             public readonly Color Color;
             public readonly float Smoothness;
+            public readonly Texture2D BaseTexture;
             public readonly List<Vector3> Vertices = new List<Vector3>(8192);
             public readonly List<Vector3> Normals = new List<Vector3>(8192);
+            public readonly List<Vector2> Uvs = new List<Vector2>(8192);
             public readonly List<int> Triangles = new List<int>(16384);
 
-            public MeshBucket(string name, Color color, float smoothness)
+            public MeshBucket(string name, Color color, float smoothness, Texture2D baseTexture)
             {
                 Name = name;
                 Color = color;
                 Smoothness = smoothness;
+                BaseTexture = baseTexture;
             }
         }
 
@@ -38,14 +41,14 @@ namespace GeoUnity.World3D
             if (buildings == null || buildings.Count == 0)
                 return root;
 
-            // Architectural maquette material buckets (5 draw calls total for thousands of buildings)
-            var wallLimestone = new MeshBucket("Walls_Limestone", new Color(0.86f, 0.83f, 0.76f, 1f), 0.12f);
-            var wallWarm = new MeshBucket("Walls_Warm", new Color(0.80f, 0.72f, 0.64f, 1f), 0.12f);
-            var wallModern = new MeshBucket("Walls_Modern", new Color(0.76f, 0.79f, 0.82f, 1f), 0.25f);
+            // Textured architectural material buckets (6 draw calls total for thousands of buildings)
+            var wallLimestone = new MeshBucket("Walls_Limestone", Color.white, 0.14f, ArchitecturalTextureGenerator.GetLimestoneWall());
+            var wallWarm = new MeshBucket("Walls_Warm", Color.white, 0.12f, ArchitecturalTextureGenerator.GetWarmWall());
+            var wallModern = new MeshBucket("Walls_Modern", Color.white, 0.30f, ArchitecturalTextureGenerator.GetModernWall());
 
-            var roofSlate = new MeshBucket("Roofs_Slate", new Color(0.32f, 0.36f, 0.42f, 1f), 0.22f);
-            var roofTerracotta = new MeshBucket("Roofs_Terracotta", new Color(0.64f, 0.36f, 0.27f, 1f), 0.15f);
-            var roofFlat = new MeshBucket("Roofs_Flat", new Color(0.55f, 0.56f, 0.58f, 1f), 0.10f);
+            var roofSlate = new MeshBucket("Roofs_Slate", Color.white, 0.22f, ArchitecturalTextureGenerator.GetSlateRoof());
+            var roofTerracotta = new MeshBucket("Roofs_Terracotta", Color.white, 0.15f, ArchitecturalTextureGenerator.GetTerracottaRoof());
+            var roofFlat = new MeshBucket("Roofs_Flat", Color.white, 0.10f, ArchitecturalTextureGenerator.GetFlatRoof());
 
             float baseElev = grid.MinElevation;
             float half = (float)(sector.SizeMeters * 0.5);
@@ -105,17 +108,21 @@ namespace GeoUnity.World3D
                 MeshBucket wallBucket = PickWallBucket(b, wallLimestone, wallWarm, wallModern);
                 MeshBucket roofBucket = PickRoofBucket(b, roofSlate, roofTerracotta, roofFlat);
 
-                // 1. Extrude Walls (flat-shaded per edge with outward normals)
+                // 1. Extrude Walls (flat-shaded per edge with outward normals & metric facade UVs)
                 int count = cleanedRing.Count;
+                float wallHeight = Mathf.Max(1f, topY - bottomY);
+                float vRepeat = wallHeight / 6.0f; // 1 texture tile = 2 floors (~6m)
                 for (int i = 0; i < count; i++)
                 {
                     Vector2 a = cleanedRing[i];
                     Vector2 c = cleanedRing[(i + 1) % count];
                     Vector2 edge = c - a;
-                    if (edge.sqrMagnitude < 1e-4f) continue;
+                    float edgeLen = edge.magnitude;
+                    if (edgeLen < 0.01f) continue;
 
                     // For CCW ring in (X, Z), outward normal is (edge.y, 0, -edge.x)
-                    Vector3 normal = new Vector3(edge.y, 0f, -edge.x).normalized;
+                    Vector3 normal = new Vector3(edge.y, 0f, -edge.x) / edgeLen;
+                    float uRepeat = edgeLen / 6.0f; // 1 texture tile = 2 window bays (~6m)
 
                     int vStart = wallBucket.Vertices.Count;
                     wallBucket.Vertices.Add(new Vector3(a.x, bottomY, a.y));
@@ -128,6 +135,11 @@ namespace GeoUnity.World3D
                     wallBucket.Normals.Add(normal);
                     wallBucket.Normals.Add(normal);
 
+                    wallBucket.Uvs.Add(new Vector2(0f, 0f));
+                    wallBucket.Uvs.Add(new Vector2(uRepeat, 0f));
+                    wallBucket.Uvs.Add(new Vector2(uRepeat, vRepeat));
+                    wallBucket.Uvs.Add(new Vector2(0f, vRepeat));
+
                     // Outward-facing CW winding when looking at wall from outside
                     wallBucket.Triangles.Add(vStart);
                     wallBucket.Triangles.Add(vStart + 3);
@@ -138,7 +150,7 @@ namespace GeoUnity.World3D
                     wallBucket.Triangles.Add(vStart + 1);
                 }
 
-                // 2. Triangulate Roof (upward normal +Y)
+                // 2. Triangulate Roof (upward normal +Y & metric world-space UVs)
                 var roofTris = EarCut2D.Triangulate(cleanedRing);
                 if (roofTris.Count >= 3)
                 {
@@ -148,6 +160,7 @@ namespace GeoUnity.World3D
                         Vector2 p = cleanedRing[i];
                         roofBucket.Vertices.Add(new Vector3(p.x, topY, p.y));
                         roofBucket.Normals.Add(Vector3.up);
+                        roofBucket.Uvs.Add(new Vector2(p.x / 8.0f, p.y / 8.0f));
                     }
 
                     // EarCut returns CCW in (X, Z) -> reverse to (a, c, b) for Unity CW front-face up (+Y)
@@ -179,6 +192,7 @@ namespace GeoUnity.World3D
                 };
                 mesh.SetVertices(bucket.Vertices);
                 mesh.SetNormals(bucket.Normals);
+                mesh.SetUVs(0, bucket.Uvs);
                 mesh.SetTriangles(bucket.Triangles, 0);
                 mesh.RecalculateBounds();
 
@@ -186,6 +200,8 @@ namespace GeoUnity.World3D
                 var mr = go.AddComponent<MeshRenderer>();
                 var mat = new Material(urpShader);
                 mat.name = $"{bucket.Name}_Mat";
+                if (bucket.BaseTexture != null)
+                    mat.SetTexture("_BaseMap", bucket.BaseTexture);
                 mat.SetColor("_BaseColor", bucket.Color);
                 mat.SetFloat("_Smoothness", bucket.Smoothness);
                 mr.sharedMaterial = mat;

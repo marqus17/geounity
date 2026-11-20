@@ -61,6 +61,12 @@ namespace GeoUnity.Ign
         public string Usage;
     }
 
+    public class VegetationZoneData
+    {
+        public List<Vector2> OuterRingLocal; // Local Unity (X, Z) meters relative to sector center
+        public string Nature;
+    }
+
     /// <summary>
     /// Downloads IGN Geoplateforme 3D data in Lambert-93 (EPSG:2154) for a GeoSector:
     /// - RGE ALTI elevation grid (WMS-R BIL 32-bit float)
@@ -221,6 +227,40 @@ namespace GeoUnity.Ign
             }
 
             return allBuildings;
+        }
+
+        public async Task<List<VegetationZoneData>> DownloadVegetationAsync(GeoSector sector, int maxFeatures = 2000)
+        {
+            const int pageSize = 1000;
+            var allZones = new List<VegetationZoneData>(256);
+            string bbox = FormatBbox(sector.MinLambertX, sector.MinLambertY, sector.MaxLambertX, sector.MaxLambertY);
+            string cacheDir = GetSectorCacheDir(sector);
+
+            for (int startIndex = 0; startIndex < maxFeatures; startIndex += pageSize)
+            {
+                string cachePath = Path.Combine(cacheDir, $"vegetation_{startIndex}.json");
+                string json = TryReadCacheText(cachePath);
+
+                if (string.IsNullOrEmpty(json))
+                {
+                    string url = $"{WfsBaseUrl}?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature" +
+                                 $"&TYPENAMES=BDTOPO_V3:zone_de_vegetation&SRSNAME=EPSG:2154" +
+                                 $"&BBOX={bbox},EPSG:2154&OUTPUTFORMAT=application/json" +
+                                 $"&PROPERTYNAME=geometrie,nature" +
+                                 $"&COUNT={pageSize}&STARTINDEX={startIndex}";
+
+                    byte[] bytes = await DownloadBytesAsync(url, 30);
+                    if (bytes == null || bytes.Length == 0) break;
+                    json = System.Text.Encoding.UTF8.GetString(bytes);
+                    WriteCacheSafe(cachePath, bytes);
+                }
+
+                int parsed = ParseGeoJsonVegetation(json, sector.CenterLambertX, sector.CenterLambertY, allZones);
+                if (parsed < pageSize)
+                    break;
+            }
+
+            return allZones;
         }
 
         private static string FormatBbox(double minX, double minY, double maxX, double maxY)
@@ -445,6 +485,107 @@ namespace GeoUnity.Ign
                 p = ptEnd + 1;
             }
             return pts;
+        }
+
+        private static int ParseGeoJsonVegetation(string json, double centerX, double centerY, List<VegetationZoneData> output)
+        {
+            if (string.IsNullOrEmpty(json)) return 0;
+
+            int featureCount = 0;
+            int idx = json.IndexOf("\"features\"", StringComparison.Ordinal);
+            if (idx < 0) return 0;
+            idx = json.IndexOf('[', idx);
+            if (idx < 0) return 0;
+            idx++;
+
+            int len = json.Length;
+            while (idx < len)
+            {
+                SkipWhitespace(json, ref idx);
+                if (idx >= len || json[idx] == ']') break;
+                if (json[idx] == ',') { idx++; continue; }
+                if (json[idx] != '{') break;
+
+                int objStart = idx;
+                int objEnd = FindMatchingBrace(json, objStart);
+                if (objEnd < 0) break;
+
+                featureCount++;
+                ParseSingleVegetationFeature(json, objStart, objEnd, centerX, centerY, output);
+                idx = objEnd + 1;
+            }
+
+            return featureCount;
+        }
+
+        private static void ParseSingleVegetationFeature(string json, int start, int end, double centerX, double centerY, List<VegetationZoneData> output)
+        {
+            string nature = null;
+            int propsIdx = json.IndexOf("\"properties\"", start, end - start, StringComparison.Ordinal);
+            if (propsIdx >= 0)
+            {
+                int propsStart = json.IndexOf('{', propsIdx, end - propsIdx);
+                if (propsStart >= 0)
+                {
+                    int propsEnd = FindMatchingBrace(json, propsStart);
+                    if (propsEnd > propsStart && propsEnd <= end)
+                    {
+                        nature = ReadStringProperty(json, propsStart, propsEnd, "\"nature\"");
+                    }
+                }
+            }
+
+            int geomIdx = json.IndexOf("\"geometry\"", start, end - start, StringComparison.Ordinal);
+            if (geomIdx < 0) return;
+            int coordsIdx = json.IndexOf("\"coordinates\"", geomIdx, end - geomIdx, StringComparison.Ordinal);
+            if (coordsIdx < 0) return;
+
+            bool isMultiPolygon = json.IndexOf("\"MultiPolygon\"", geomIdx, coordsIdx - geomIdx, StringComparison.Ordinal) >= 0;
+            int arrayStart = json.IndexOf('[', coordsIdx, end - coordsIdx);
+            if (arrayStart < 0) return;
+
+            if (isMultiPolygon)
+            {
+                int p = arrayStart + 1;
+                while (p < end)
+                {
+                    SkipWhitespace(json, ref p);
+                    if (p >= end || json[p] == ']') break;
+                    if (json[p] == ',') { p++; continue; }
+                    if (json[p] == '[')
+                    {
+                        int polyEnd = FindMatchingBracket(json, p, end);
+                        if (polyEnd < 0) break;
+                        int ringStart = json.IndexOf('[', p + 1, polyEnd - p - 1);
+                        if (ringStart >= 0)
+                        {
+                            int ringEnd = FindMatchingBracket(json, ringStart, polyEnd);
+                            if (ringEnd > ringStart)
+                            {
+                                var ring = ParseCoordinateRing(json, ringStart, ringEnd, centerX, centerY);
+                                if (ring.Count >= 3)
+                                    output.Add(new VegetationZoneData { OuterRingLocal = ring, Nature = nature });
+                            }
+                        }
+                        p = polyEnd + 1;
+                    }
+                    else break;
+                }
+            }
+            else
+            {
+                int ringStart = json.IndexOf('[', arrayStart + 1, end - arrayStart - 1);
+                if (ringStart >= 0)
+                {
+                    int ringEnd = FindMatchingBracket(json, ringStart, end);
+                    if (ringEnd > ringStart)
+                    {
+                        var ring = ParseCoordinateRing(json, ringStart, ringEnd, centerX, centerY);
+                        if (ring.Count >= 3)
+                            output.Add(new VegetationZoneData { OuterRingLocal = ring, Nature = nature });
+                    }
+                }
+            }
         }
 
         private static bool TryReadFloatProperty(string json, int start, int end, string key, out float value)
