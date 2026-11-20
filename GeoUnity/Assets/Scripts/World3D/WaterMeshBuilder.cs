@@ -91,15 +91,30 @@ namespace GeoUnity.World3D
             var mr = root.AddComponent<MeshRenderer>();
             mr.shadowCastingMode = ShadowCastingMode.Off;
 
-            var urpShader = Shader.Find("Universal Render Pipeline/Lit");
-            if (urpShader == null)
-                urpShader = GraphicsSettings.currentRenderPipeline.defaultMaterial.shader;
+            var waterShader = Shader.Find("GeoUnity/Water");
+            if (waterShader == null)
+                waterShader = Shader.Find("Universal Render Pipeline/Lit");
+            if (waterShader == null)
+                waterShader = GraphicsSettings.currentRenderPipeline.defaultMaterial.shader;
 
-            var mat = new Material(urpShader);
+            var mat = new Material(waterShader);
             mat.name = "WaterSurfaceMaterial";
-            mat.SetColor("_BaseColor", new Color(0.07f, 0.27f, 0.40f, 1f));
-            mat.SetFloat("_Smoothness", 0.92f);
-            mat.SetFloat("_Metallic", 0.18f);
+            if (waterShader.name == "GeoUnity/Water")
+            {
+                mat.SetColor("_ShallowColor", new Color(0.09f, 0.44f, 0.54f, 0.60f));
+                mat.SetColor("_DeepColor", new Color(0.04f, 0.21f, 0.36f, 0.84f));
+                mat.SetColor("_SkyColor", new Color(0.58f, 0.78f, 0.96f, 1f));
+                mat.SetFloat("_WaveSpeed", 0.50f);
+                mat.SetFloat("_WaveScale", 0.14f);
+                mat.SetFloat("_WaveStrength", 0.09f);
+                mat.SetFloat("_SpecularPower", 96f);
+            }
+            else
+            {
+                mat.SetColor("_BaseColor", new Color(0.07f, 0.27f, 0.40f, 1f));
+                mat.SetFloat("_Smoothness", 0.92f);
+                mat.SetFloat("_Metallic", 0.18f);
+            }
             mr.sharedMaterial = mat;
 
             return root;
