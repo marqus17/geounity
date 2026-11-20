@@ -150,25 +150,29 @@ namespace GeoUnity.World3D
                     wallBucket.Triangles.Add(vStart + 1);
                 }
 
-                // 2. Triangulate Roof (upward normal +Y & metric world-space UVs)
-                var roofTris = EarCut2D.Triangulate(cleanedRing);
-                if (roofTris.Count >= 3)
+                // 2. Build Roof: sloped hipped roof for residential/compact buildings, flat roof otherwise
+                bool allowSloped = roofBucket != roofFlat && height <= 32f && count <= 10;
+                if (!allowSloped || !TryAddSlopedRoof(roofBucket, cleanedRing, topY))
                 {
-                    int rStart = roofBucket.Vertices.Count;
-                    for (int i = 0; i < count; i++)
+                    var roofTris = EarCut2D.Triangulate(cleanedRing);
+                    if (roofTris.Count >= 3)
                     {
-                        Vector2 p = cleanedRing[i];
-                        roofBucket.Vertices.Add(new Vector3(p.x, topY, p.y));
-                        roofBucket.Normals.Add(Vector3.up);
-                        roofBucket.Uvs.Add(new Vector2(p.x / 8.0f, p.y / 8.0f));
-                    }
+                        int rStart = roofBucket.Vertices.Count;
+                        for (int i = 0; i < count; i++)
+                        {
+                            Vector2 p = cleanedRing[i];
+                            roofBucket.Vertices.Add(new Vector3(p.x, topY, p.y));
+                            roofBucket.Normals.Add(Vector3.up);
+                            roofBucket.Uvs.Add(new Vector2(p.x / 8.0f, p.y / 8.0f));
+                        }
 
-                    // EarCut returns CCW in (X, Z) -> reverse to (a, c, b) for Unity CW front-face up (+Y)
-                    for (int i = 0; i < roofTris.Count; i += 3)
-                    {
-                        roofBucket.Triangles.Add(rStart + roofTris[i]);
-                        roofBucket.Triangles.Add(rStart + roofTris[i + 2]);
-                        roofBucket.Triangles.Add(rStart + roofTris[i + 1]);
+                        // EarCut returns CCW in (X, Z) -> reverse to (a, c, b) for Unity CW front-face up (+Y)
+                        for (int i = 0; i < roofTris.Count; i += 3)
+                        {
+                            roofBucket.Triangles.Add(rStart + roofTris[i]);
+                            roofBucket.Triangles.Add(rStart + roofTris[i + 2]);
+                            roofBucket.Triangles.Add(rStart + roofTris[i + 1]);
+                        }
                     }
                 }
             }
@@ -208,6 +212,129 @@ namespace GeoUnity.World3D
             }
 
             return root;
+        }
+
+        private static bool TryAddSlopedRoof(MeshBucket bucket, List<Vector2> ring, float eaveY)
+        {
+            float area = Mathf.Abs(EarCut2D.SignedArea(ring));
+            if (area < 16f || area > 1600f) return false;
+
+            // Case A: 4-vertex buildings -> true French 4-pan hipped roof with ridge along the longer axis
+            if (ring.Count == 4)
+            {
+                Vector2 p0 = ring[0], p1 = ring[1], p2 = ring[2], p3 = ring[3];
+                float len01 = (p1 - p0).magnitude;
+                float len12 = (p2 - p1).magnitude;
+                float len23 = (p3 - p2).magnitude;
+                float len30 = (p0 - p3).magnitude;
+
+                float avgA = (len01 + len23) * 0.5f;
+                float avgB = (len12 + len30) * 0.5f;
+
+                Vector2 midStart, midEnd;
+                float shortSpan;
+                int i0, i1, i2, i3;
+
+                if (avgA >= avgB)
+                {
+                    // Ridge runs parallel to edges (p0->p1) and (p3->p2)
+                    i0 = 0; i1 = 1; i2 = 2; i3 = 3;
+                    midStart = (p0 + p3) * 0.5f;
+                    midEnd = (p1 + p2) * 0.5f;
+                    shortSpan = avgB;
+                }
+                else
+                {
+                    // Ridge runs parallel to edges (p1->p2) and (p0->p3)
+                    i0 = 1; i1 = 2; i2 = 3; i3 = 0;
+                    midStart = (p1 + p0) * 0.5f;
+                    midEnd = (p2 + p3) * 0.5f;
+                    shortSpan = avgA;
+                }
+
+                if (shortSpan < 3.5f || shortSpan > 26f) return false;
+
+                float ridgeH = Mathf.Clamp(shortSpan * 0.28f, 1.4f, 4.4f);
+                Vector2 rA2D = Vector2.Lerp(midStart, midEnd, 0.22f);
+                Vector2 rB2D = Vector2.Lerp(midStart, midEnd, 0.78f);
+
+                Vector3 c0 = new Vector3(ring[i0].x, eaveY, ring[i0].y);
+                Vector3 c1 = new Vector3(ring[i1].x, eaveY, ring[i1].y);
+                Vector3 c2 = new Vector3(ring[i2].x, eaveY, ring[i2].y);
+                Vector3 c3 = new Vector3(ring[i3].x, eaveY, ring[i3].y);
+                Vector3 rA = new Vector3(rA2D.x, eaveY + ridgeH, rA2D.y);
+                Vector3 rB = new Vector3(rB2D.x, eaveY + ridgeH, rB2D.y);
+
+                // 2 main trapezoidal slopes + 2 triangular hip ends (winding outward/upward)
+                AddRoofQuad(bucket, c0, rA, rB, c1);
+                AddRoofQuad(bucket, c2, rB, rA, c3);
+                AddRoofTri(bucket, c1, rB, c2);
+                AddRoofTri(bucket, c3, rA, c0);
+                return true;
+            }
+
+            // Case B: compact 3..10-vertex footprints where centroid lies cleanly inside -> hipped pyramid
+            Vector2 centroid = Vector2.zero;
+            for (int i = 0; i < ring.Count; i++) centroid += ring[i];
+            centroid /= ring.Count;
+
+            if (!PointInPolygon(ring, centroid)) return false;
+
+            float maxRad = 0f;
+            for (int i = 0; i < ring.Count; i++)
+            {
+                float d = (ring[i] - centroid).magnitude;
+                if (d > maxRad) maxRad = d;
+            }
+            if (maxRad < 2.5f || maxRad > 18f) return false;
+
+            float apexH = Mathf.Clamp(maxRad * 0.30f, 1.4f, 4.2f);
+            Vector3 apex = new Vector3(centroid.x, eaveY + apexH, centroid.y);
+
+            for (int i = 0; i < ring.Count; i++)
+            {
+                Vector2 a2 = ring[i];
+                Vector2 b2 = ring[(i + 1) % ring.Count];
+                Vector3 a = new Vector3(a2.x, eaveY, a2.y);
+                Vector3 b = new Vector3(b2.x, eaveY, b2.y);
+                AddRoofTri(bucket, a, apex, b);
+            }
+            return true;
+        }
+
+        private static void AddRoofTri(MeshBucket bucket, Vector3 a, Vector3 b, Vector3 c)
+        {
+            Vector3 n = Vector3.Cross(b - a, c - a).normalized;
+            if (n.y < 0f) { (b, c) = (c, b); n = -n; }
+
+            int idx = bucket.Vertices.Count;
+            bucket.Vertices.Add(a); bucket.Vertices.Add(b); bucket.Vertices.Add(c);
+            bucket.Normals.Add(n); bucket.Normals.Add(n); bucket.Normals.Add(n);
+            bucket.Uvs.Add(new Vector2(a.x / 8f, a.z / 8f));
+            bucket.Uvs.Add(new Vector2(b.x / 8f, b.z / 8f));
+            bucket.Uvs.Add(new Vector2(c.x / 8f, c.z / 8f));
+            bucket.Triangles.Add(idx); bucket.Triangles.Add(idx + 1); bucket.Triangles.Add(idx + 2);
+        }
+
+        private static void AddRoofQuad(MeshBucket bucket, Vector3 a, Vector3 b, Vector3 c, Vector3 d)
+        {
+            AddRoofTri(bucket, a, b, c);
+            AddRoofTri(bucket, a, c, d);
+        }
+
+        private static bool PointInPolygon(List<Vector2> poly, Vector2 pt)
+        {
+            bool inside = false;
+            int n = poly.Count;
+            for (int i = 0, j = n - 1; i < n; j = i++)
+            {
+                Vector2 pi = poly[i];
+                Vector2 pj = poly[j];
+                bool intersect = ((pi.y > pt.y) != (pj.y > pt.y)) &&
+                                 (pt.x < (pj.x - pi.x) * (pt.y - pi.y) / (pj.y - pi.y + 1e-9f) + pi.x);
+                if (intersect) inside = !inside;
+            }
+            return inside;
         }
 
         private static MeshBucket PickWallBucket(BuildingData b, MeshBucket limestone, MeshBucket warm, MeshBucket modern)

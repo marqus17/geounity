@@ -67,6 +67,12 @@ namespace GeoUnity.Ign
         public string Nature;
     }
 
+    public class WaterSurfaceData
+    {
+        public List<Vector2> OuterRingLocal; // Local Unity (X, Z) meters relative to sector center
+        public string Nature;
+    }
+
     /// <summary>
     /// Downloads IGN Geoplateforme 3D data in Lambert-93 (EPSG:2154) for a GeoSector:
     /// - RGE ALTI elevation grid (WMS-R BIL 32-bit float)
@@ -261,6 +267,51 @@ namespace GeoUnity.Ign
             }
 
             return allZones;
+        }
+
+        public async Task<List<WaterSurfaceData>> DownloadWaterAsync(GeoSector sector, int maxFeatures = 1000)
+        {
+            const int pageSize = 1000;
+            var allWater = new List<WaterSurfaceData>(64);
+            string bbox = FormatBbox(sector.MinLambertX, sector.MinLambertY, sector.MaxLambertX, sector.MaxLambertY);
+            string cacheDir = GetSectorCacheDir(sector);
+
+            for (int startIndex = 0; startIndex < maxFeatures; startIndex += pageSize)
+            {
+                string cachePath = Path.Combine(cacheDir, $"water_{startIndex}.json");
+                string json = TryReadCacheText(cachePath);
+
+                if (string.IsNullOrEmpty(json))
+                {
+                    string url = $"{WfsBaseUrl}?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature" +
+                                 $"&TYPENAMES=BDTOPO_V3:surface_hydrographique&SRSNAME=EPSG:2154" +
+                                 $"&BBOX={bbox},EPSG:2154&OUTPUTFORMAT=application/json" +
+                                 $"&PROPERTYNAME=geometrie,nature" +
+                                 $"&COUNT={pageSize}&STARTINDEX={startIndex}";
+
+                    byte[] bytes = await DownloadBytesAsync(url, 30);
+                    if (bytes == null || bytes.Length == 0) break;
+                    json = System.Text.Encoding.UTF8.GetString(bytes);
+                    WriteCacheSafe(cachePath, bytes);
+                }
+
+                // Reuse vegetation polygon+nature parser and wrap as WaterSurfaceData
+                var temp = new List<VegetationZoneData>(64);
+                int parsed = ParseGeoJsonVegetation(json, sector.CenterLambertX, sector.CenterLambertY, temp);
+                for (int i = 0; i < temp.Count; i++)
+                {
+                    allWater.Add(new WaterSurfaceData
+                    {
+                        OuterRingLocal = temp[i].OuterRingLocal,
+                        Nature = temp[i].Nature
+                    });
+                }
+
+                if (parsed < pageSize)
+                    break;
+            }
+
+            return allWater;
         }
 
         private static string FormatBbox(double minX, double minY, double maxX, double maxY)
