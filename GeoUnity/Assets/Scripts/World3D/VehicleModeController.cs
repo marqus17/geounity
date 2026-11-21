@@ -47,9 +47,13 @@ namespace GeoUnity.World3D
 
         // Car state
         private GameObject _carRoot;
+        private Transform[] _carWheels;
+        private Transform[] _carFrontSteerPivots;
+        private Material _carTailLightMat;
         private Vector3 _carPos;
         private float _carYaw;
         private float _carSpeed;
+        private float _carSteerVisual;
         private Vector2 _lastSafeRoadPos;
         private float _lastSafeRoadYaw;
         private float _carResetCooldown;
@@ -314,6 +318,7 @@ namespace GeoUnity.World3D
             _carPos.y = SampleTerrainY(_carPos.x, _carPos.z) + 0.55f;
 
             ApplyCarTransform();
+            AnimateCarDetails(steer, accel < -0.1f, dt);
 
             // Check road adherence, border, building collision, and water collision
             if (_carResetCooldown <= 0f)
@@ -445,6 +450,35 @@ namespace GeoUnity.World3D
                 statusToastText.gameObject.SetActive(false);
         }
 
+        private void AnimateCarDetails(float steerInput, bool braking, float dt)
+        {
+            _carSteerVisual = Mathf.Lerp(_carSteerVisual, steerInput * 28f, dt * 10f);
+            if (_carFrontSteerPivots != null)
+            {
+                for (int i = 0; i < _carFrontSteerPivots.Length; i++)
+                {
+                    if (_carFrontSteerPivots[i] != null)
+                        _carFrontSteerPivots[i].localRotation = Quaternion.Euler(0f, _carSteerVisual, 0f);
+                }
+            }
+
+            if (_carWheels != null)
+            {
+                float spinDeg = (_carSpeed / 0.36f) * Mathf.Rad2Deg * dt;
+                for (int i = 0; i < _carWheels.Length; i++)
+                {
+                    if (_carWheels[i] != null)
+                        _carWheels[i].Rotate(spinDeg, 0f, 0f, Space.Self);
+                }
+            }
+
+            if (_carTailLightMat != null)
+            {
+                Color tailGlow = braking ? new Color(2.4f, 0.12f, 0.08f, 1f) : new Color(1.05f, 0.08f, 0.06f, 1f);
+                _carTailLightMat.SetColor("_BaseColor", tailGlow);
+            }
+        }
+
         // ===================== PROCEDURAL VEHICLE MESHES =====================
         private void EnsureVehiclesCreated()
         {
@@ -453,41 +487,156 @@ namespace GeoUnity.World3D
                 urpShader = GraphicsSettings.currentRenderPipeline.defaultMaterial.shader;
 
             if (_ulmRoot == null)
-            {
-                _ulmRoot = new GameObject("Player_ULM");
-                // Delta wing
-                CreatePart(_ulmRoot.transform, PrimitiveType.Cube, "Wing", new Vector3(0f, 1.35f, 0f), new Vector3(6.8f, 0.14f, 2.2f), new Color(0.95f, 0.32f, 0.18f), urpShader);
-                // Fuselage / trike pod
-                CreatePart(_ulmRoot.transform, PrimitiveType.Capsule, "Fuselage", new Vector3(0f, 0.35f, 0.1f), new Vector3(0.85f, 1.4f, 0.85f), new Color(0.94f, 0.95f, 0.97f), urpShader, Quaternion.Euler(90f, 0f, 0f));
-                // Mast
-                CreatePart(_ulmRoot.transform, PrimitiveType.Cylinder, "Mast", new Vector3(0f, 0.9f, -0.1f), new Vector3(0.12f, 0.55f, 0.12f), new Color(0.25f, 0.28f, 0.32f), urpShader);
-                // Tail boom + stabilizer
-                CreatePart(_ulmRoot.transform, PrimitiveType.Cube, "TailBoom", new Vector3(0f, 0.55f, -2.0f), new Vector3(0.18f, 0.18f, 2.4f), new Color(0.85f, 0.88f, 0.92f), urpShader);
-                CreatePart(_ulmRoot.transform, PrimitiveType.Cube, "TailFin", new Vector3(0f, 0.95f, -3.0f), new Vector3(0.10f, 0.85f, 0.75f), new Color(0.95f, 0.32f, 0.18f), urpShader);
-                // Spinning rear pusher propeller
-                var prop = CreatePart(_ulmRoot.transform, PrimitiveType.Cube, "Propeller", new Vector3(0f, 0.45f, -1.25f), new Vector3(1.5f, 0.14f, 0.06f), new Color(0.12f, 0.14f, 0.16f), urpShader);
-                _ulmPropeller = prop.transform;
-                _ulmRoot.SetActive(false);
-            }
+                BuildRealisticUlm(urpShader);
 
             if (_carRoot == null)
-            {
-                _carRoot = new GameObject("Player_Car");
-                // Body
-                CreatePart(_carRoot.transform, PrimitiveType.Cube, "Chassis", new Vector3(0f, 0.55f, 0f), new Vector3(2.0f, 0.65f, 4.4f), new Color(0.92f, 0.18f, 0.22f), urpShader);
-                // Cabin
-                CreatePart(_carRoot.transform, PrimitiveType.Cube, "Cabin", new Vector3(0f, 1.12f, -0.25f), new Vector3(1.65f, 0.58f, 2.15f), new Color(0.16f, 0.22f, 0.28f), urpShader);
-                // 4 wheels
-                Color wheelCol = new Color(0.12f, 0.12f, 0.14f);
-                CreatePart(_carRoot.transform, PrimitiveType.Cylinder, "WheelFL", new Vector3(-1.02f, 0.35f, 1.35f), new Vector3(0.70f, 0.18f, 0.70f), wheelCol, urpShader, Quaternion.Euler(0f, 0f, 90f));
-                CreatePart(_carRoot.transform, PrimitiveType.Cylinder, "WheelFR", new Vector3(1.02f, 0.35f, 1.35f), new Vector3(0.70f, 0.18f, 0.70f), wheelCol, urpShader, Quaternion.Euler(0f, 0f, 90f));
-                CreatePart(_carRoot.transform, PrimitiveType.Cylinder, "WheelRL", new Vector3(-1.02f, 0.35f, -1.35f), new Vector3(0.70f, 0.18f, 0.70f), wheelCol, urpShader, Quaternion.Euler(0f, 0f, 90f));
-                CreatePart(_carRoot.transform, PrimitiveType.Cylinder, "WheelRR", new Vector3(1.02f, 0.35f, -1.35f), new Vector3(0.70f, 0.18f, 0.70f), wheelCol, urpShader, Quaternion.Euler(0f, 0f, 90f));
-                _carRoot.SetActive(false);
-            }
+                BuildRealisticCar(urpShader);
         }
 
-        private static GameObject CreatePart(Transform parent, PrimitiveType type, string name, Vector3 pos, Vector3 scale, Color color, Shader shader, Quaternion? rot = null)
+        private void BuildRealisticUlm(Shader urpShader)
+        {
+            _ulmRoot = new GameObject("Player_ULM");
+
+            Material wingOrange = MakeMat(urpShader, new Color(0.92f, 0.30f, 0.12f), metallic: 0.35f, smoothness: 0.86f);
+            Material whiteGloss = MakeMat(urpShader, new Color(0.95f, 0.96f, 0.98f), metallic: 0.25f, smoothness: 0.92f);
+            Material chromeMat = MakeMat(urpShader, new Color(0.82f, 0.86f, 0.90f), metallic: 0.92f, smoothness: 0.94f);
+            Material glassMat = MakeMat(urpShader, new Color(0.08f, 0.15f, 0.24f), metallic: 0.30f, smoothness: 0.97f);
+            Material darkCarbon = MakeMat(urpShader, new Color(0.12f, 0.13f, 0.16f), metallic: 0.45f, smoothness: 0.65f);
+            Material navRed = MakeEmissiveMat(urpShader, new Color(0.9f, 0.1f, 0.1f), new Color(2.5f, 0.15f, 0.1f));
+            Material navGreen = MakeEmissiveMat(urpShader, new Color(0.1f, 0.9f, 0.2f), new Color(0.15f, 2.5f, 0.3f));
+
+            // Swept delta wing (left & right swept panels + glossy white leading-edge center)
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cube, "WingLeft", new Vector3(-2.15f, 1.55f, -0.35f), new Vector3(4.6f, 0.10f, 1.85f), wingOrange, Quaternion.Euler(2f, 18f, -3f));
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cube, "WingRight", new Vector3(2.15f, 1.55f, -0.35f), new Vector3(4.6f, 0.10f, 1.85f), wingOrange, Quaternion.Euler(2f, -18f, 3f));
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cube, "WingCenter", new Vector3(0f, 1.62f, 0.25f), new Vector3(1.5f, 0.12f, 1.95f), whiteGloss);
+            // Winglets + aviation nav lights (port=red, starboard=green)
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cube, "WingletL", new Vector3(-4.25f, 1.68f, -1.05f), new Vector3(0.08f, 0.55f, 0.95f), whiteGloss, Quaternion.Euler(0f, 18f, 15f));
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cube, "WingletR", new Vector3(4.25f, 1.68f, -1.05f), new Vector3(0.08f, 0.55f, 0.95f), whiteGloss, Quaternion.Euler(0f, -18f, -15f));
+            CreatePart(_ulmRoot.transform, PrimitiveType.Sphere, "NavLightL", new Vector3(-4.32f, 1.72f, -0.95f), Vector3.one * 0.18f, navRed);
+            CreatePart(_ulmRoot.transform, PrimitiveType.Sphere, "NavLightR", new Vector3(4.32f, 1.72f, -0.95f), Vector3.one * 0.18f, navGreen);
+
+            // Aerodynamic trike fuselage pod + reflective glass canopy
+            CreatePart(_ulmRoot.transform, PrimitiveType.Capsule, "FuselagePod", new Vector3(0f, 0.42f, 0.20f), new Vector3(0.88f, 1.55f, 0.82f), whiteGloss, Quaternion.Euler(86f, 0f, 0f));
+            CreatePart(_ulmRoot.transform, PrimitiveType.Sphere, "CanopyGlass", new Vector3(0f, 0.72f, 0.55f), new Vector3(0.76f, 0.56f, 1.25f), glassMat, Quaternion.Euler(-12f, 0f, 0f));
+
+            // Chrome A-frame struts & kingpost mast
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cylinder, "Mast", new Vector3(0f, 1.15f, -0.05f), new Vector3(0.09f, 0.58f, 0.09f), chromeMat, Quaternion.Euler(-10f, 0f, 0f));
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cylinder, "StrutL", new Vector3(-0.62f, 1.10f, 0.25f), new Vector3(0.05f, 0.72f, 0.05f), chromeMat, Quaternion.Euler(8f, 0f, -26f));
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cylinder, "StrutR", new Vector3(0.62f, 1.10f, 0.25f), new Vector3(0.05f, 0.72f, 0.05f), chromeMat, Quaternion.Euler(8f, 0f, 26f));
+
+            // Engine cowling & 3-blade spinning pusher propeller
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cylinder, "EngineCowling", new Vector3(0f, 0.50f, -1.15f), new Vector3(0.55f, 0.35f, 0.55f), darkCarbon, Quaternion.Euler(90f, 0f, 0f));
+            var propHub = new GameObject("PropellerHub");
+            propHub.transform.SetParent(_ulmRoot.transform, false);
+            propHub.transform.localPosition = new Vector3(0f, 0.50f, -1.52f);
+            CreatePart(propHub.transform, PrimitiveType.Sphere, "Spinner", Vector3.zero, new Vector3(0.22f, 0.22f, 0.28f), chromeMat);
+            for (int b = 0; b < 3; b++)
+            {
+                var blade = CreatePart(propHub.transform, PrimitiveType.Cube, $"Blade_{b}", Vector3.zero, new Vector3(0.11f, 0.82f, 0.03f), darkCarbon);
+                float angle = b * 120f;
+                blade.transform.localRotation = Quaternion.Euler(0f, 0f, angle);
+                blade.transform.localPosition = Quaternion.Euler(0f, 0f, angle) * new Vector3(0f, 0.42f, 0f);
+            }
+            _ulmPropeller = propHub.transform;
+
+            // Landing gear (chrome legs + 3 wheels)
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cylinder, "GearLegL", new Vector3(-0.65f, 0.05f, -0.45f), new Vector3(0.06f, 0.42f, 0.06f), chromeMat, Quaternion.Euler(0f, 0f, 28f));
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cylinder, "GearLegR", new Vector3(0.65f, 0.05f, -0.45f), new Vector3(0.06f, 0.42f, 0.06f), chromeMat, Quaternion.Euler(0f, 0f, -28f));
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cylinder, "WheelNose", new Vector3(0f, -0.18f, 1.15f), new Vector3(0.36f, 0.10f, 0.36f), darkCarbon, Quaternion.Euler(0f, 0f, 90f));
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cylinder, "WheelRearL", new Vector3(-0.88f, -0.22f, -0.45f), new Vector3(0.42f, 0.12f, 0.42f), darkCarbon, Quaternion.Euler(0f, 0f, 90f));
+            CreatePart(_ulmRoot.transform, PrimitiveType.Cylinder, "WheelRearR", new Vector3(0.88f, -0.22f, -0.45f), new Vector3(0.42f, 0.12f, 0.42f), darkCarbon, Quaternion.Euler(0f, 0f, 90f));
+
+            _ulmRoot.SetActive(false);
+        }
+
+        private void BuildRealisticCar(Shader urpShader)
+        {
+            _carRoot = new GameObject("Player_Car");
+
+            // High-gloss metallic sports coupe paint + tinted reflective glass + chrome rims
+            Material carPaint = MakeMat(urpShader, new Color(0.78f, 0.10f, 0.14f), metallic: 0.68f, smoothness: 0.93f);
+            Material darkTrim = MakeMat(urpShader, new Color(0.11f, 0.12f, 0.14f), metallic: 0.25f, smoothness: 0.45f);
+            Material glassMat = MakeMat(urpShader, new Color(0.07f, 0.12f, 0.19f), metallic: 0.35f, smoothness: 0.98f);
+            Material chromeMat = MakeMat(urpShader, new Color(0.86f, 0.89f, 0.93f), metallic: 0.95f, smoothness: 0.94f);
+            Material tireMat = MakeMat(urpShader, new Color(0.09f, 0.09f, 0.10f), metallic: 0.05f, smoothness: 0.18f);
+            Material headLightMat = MakeEmissiveMat(urpShader, new Color(1.0f, 0.97f, 0.88f), new Color(2.6f, 2.4f, 2.0f));
+            _carTailLightMat = MakeEmissiveMat(urpShader, new Color(0.85f, 0.06f, 0.06f), new Color(1.1f, 0.06f, 0.05f));
+
+            // Sculpted lower chassis + front/rear bumpers + side skirts
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "BodyMain", new Vector3(0f, 0.56f, 0f), new Vector3(2.04f, 0.54f, 4.50f), carPaint);
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "FrontSplitter", new Vector3(0f, 0.28f, 2.18f), new Vector3(2.02f, 0.12f, 0.34f), darkTrim);
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "RearDiffuser", new Vector3(0f, 0.28f, -2.18f), new Vector3(1.96f, 0.16f, 0.30f), darkTrim);
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "FrontGrille", new Vector3(0f, 0.48f, 2.24f), new Vector3(1.22f, 0.24f, 0.06f), darkTrim);
+
+            // Sloped hood + roof + angled reflective windshield & fastback rear glass
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "Hood", new Vector3(0f, 0.81f, 1.32f), new Vector3(1.88f, 0.14f, 1.48f), carPaint, Quaternion.Euler(5f, 0f, 0f));
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "Roof", new Vector3(0f, 1.32f, -0.28f), new Vector3(1.56f, 0.10f, 1.50f), carPaint);
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "CabinGlass", new Vector3(0f, 1.06f, -0.25f), new Vector3(1.62f, 0.46f, 1.92f), glassMat);
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "Windshield", new Vector3(0f, 1.06f, 0.68f), new Vector3(1.58f, 0.10f, 0.92f), glassMat, Quaternion.Euler(-34f, 0f, 0f));
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "RearGlass", new Vector3(0f, 1.08f, -1.20f), new Vector3(1.56f, 0.10f, 0.88f), glassMat, Quaternion.Euler(28f, 0f, 0f));
+
+            // Side mirrors, rear spoiler & chrome twin exhausts
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "MirrorL", new Vector3(-1.12f, 0.92f, 0.52f), new Vector3(0.24f, 0.13f, 0.16f), carPaint);
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "MirrorR", new Vector3(1.12f, 0.92f, 0.52f), new Vector3(0.24f, 0.13f, 0.16f), carPaint);
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "Spoiler", new Vector3(0f, 0.96f, -2.08f), new Vector3(1.88f, 0.07f, 0.28f), darkTrim, Quaternion.Euler(-8f, 0f, 0f));
+            CreatePart(_carRoot.transform, PrimitiveType.Cylinder, "ExhaustL", new Vector3(-0.56f, 0.28f, -2.30f), new Vector3(0.13f, 0.14f, 0.13f), chromeMat, Quaternion.Euler(90f, 0f, 0f));
+            CreatePart(_carRoot.transform, PrimitiveType.Cylinder, "ExhaustR", new Vector3(0.56f, 0.28f, -2.30f), new Vector3(0.13f, 0.14f, 0.13f), chromeMat, Quaternion.Euler(90f, 0f, 0f));
+
+            // Emissive LED headlights & taillights
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "HeadlightL", new Vector3(-0.74f, 0.60f, 2.24f), new Vector3(0.38f, 0.14f, 0.08f), headLightMat);
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "HeadlightR", new Vector3(0.74f, 0.60f, 2.24f), new Vector3(0.38f, 0.14f, 0.08f), headLightMat);
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "TaillightL", new Vector3(-0.70f, 0.64f, -2.24f), new Vector3(0.46f, 0.13f, 0.08f), _carTailLightMat);
+            CreatePart(_carRoot.transform, PrimitiveType.Cube, "TaillightR", new Vector3(0.70f, 0.64f, -2.24f), new Vector3(0.46f, 0.13f, 0.08f), _carTailLightMat);
+
+            // 4 articulated wheels with rubber tires + chrome alloy rims
+            _carWheels = new Transform[4];
+            _carFrontSteerPivots = new Transform[2];
+
+            Vector3[] wheelOffsets =
+            {
+                new Vector3(-1.02f, 0.36f, 1.38f),
+                new Vector3(1.02f, 0.36f, 1.38f),
+                new Vector3(-1.02f, 0.36f, -1.36f),
+                new Vector3(1.02f, 0.36f, -1.36f)
+            };
+
+            for (int i = 0; i < 4; i++)
+            {
+                var pivot = new GameObject($"WheelPivot_{i}");
+                pivot.transform.SetParent(_carRoot.transform, false);
+                pivot.transform.localPosition = wheelOffsets[i];
+                if (i < 2) _carFrontSteerPivots[i] = pivot.transform;
+
+                var spinNode = new GameObject($"WheelSpin_{i}");
+                spinNode.transform.SetParent(pivot.transform, false);
+                _carWheels[i] = spinNode.transform;
+
+                CreatePart(spinNode.transform, PrimitiveType.Cylinder, "Tire", Vector3.zero, new Vector3(0.72f, 0.15f, 0.72f), tireMat, Quaternion.Euler(0f, 0f, 90f));
+                CreatePart(spinNode.transform, PrimitiveType.Cylinder, "Rim", Vector3.zero, new Vector3(0.46f, 0.165f, 0.46f), chromeMat, Quaternion.Euler(0f, 0f, 90f));
+                CreatePart(spinNode.transform, PrimitiveType.Cube, "Spoke", Vector3.zero, new Vector3(0.35f, 0.40f, 0.07f), darkTrim);
+            }
+
+            _carRoot.SetActive(false);
+        }
+
+        private static Material MakeMat(Shader shader, Color color, float metallic, float smoothness)
+        {
+            var mat = new Material(shader);
+            mat.SetColor("_BaseColor", color);
+            mat.SetFloat("_Metallic", metallic);
+            mat.SetFloat("_Smoothness", smoothness);
+            return mat;
+        }
+
+        private static Material MakeEmissiveMat(Shader fallbackShader, Color baseColor, Color emissionColor)
+        {
+            var unlit = Shader.Find("Universal Render Pipeline/Unlit");
+            var mat = new Material(unlit != null ? unlit : fallbackShader);
+            mat.SetColor("_BaseColor", emissionColor);
+            return mat;
+        }
+
+        private static GameObject CreatePart(Transform parent, PrimitiveType type, string name, Vector3 pos, Vector3 scale, Material mat, Quaternion? rot = null)
         {
             var go = GameObject.CreatePrimitive(type);
             go.name = name;
@@ -496,10 +645,6 @@ namespace GeoUnity.World3D
             go.transform.localPosition = pos;
             go.transform.localScale = scale;
             if (rot.HasValue) go.transform.localRotation = rot.Value;
-
-            var mat = new Material(shader);
-            mat.SetColor("_BaseColor", color);
-            mat.SetFloat("_Smoothness", 0.45f);
             go.GetComponent<Renderer>().sharedMaterial = mat;
             return go;
         }
