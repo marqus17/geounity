@@ -379,9 +379,10 @@ namespace GeoUnity.Ign
                     sector.MinLat, sector.MinLon, sector.MaxLat, sector.MaxLon);
                 string encoded = UnityWebRequest.EscapeURL(query);
 
-                // shortcut: try 2 public Overpass endpoints with short timeout and silent fallback if busy
+                // shortcut: OSM France Overpass primary, public mirrors as fallback
                 string[] endpoints =
                 {
+                    "https://overpass.openstreetmap.fr/api/interpreter?data=",
                     "https://overpass-api.de/api/interpreter?data=",
                     "https://overpass.private.coffee/api/interpreter?data="
                 };
