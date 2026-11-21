@@ -201,6 +201,7 @@ namespace GeoUnity.World3D
                 mesh.RecalculateBounds();
 
                 go.AddComponent<MeshFilter>().sharedMesh = mesh;
+                go.AddComponent<MeshCollider>().sharedMesh = mesh;
                 var mr = go.AddComponent<MeshRenderer>();
                 var mat = new Material(urpShader);
                 mat.name = $"{bucket.Name}_Mat";

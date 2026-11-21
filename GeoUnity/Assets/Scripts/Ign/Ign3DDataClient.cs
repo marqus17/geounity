@@ -73,6 +73,13 @@ namespace GeoUnity.Ign
         public string Nature;
     }
 
+    public class RoadSegmentData
+    {
+        public List<Vector2> PointsLocal; // Local Unity (X, Z) polyline relative to sector center
+        public float WidthMeters;
+        public string Nature;
+    }
+
     /// <summary>
     /// Downloads IGN Geoplateforme 3D data in Lambert-93 (EPSG:2154) for a GeoSector:
     /// - RGE ALTI elevation grid (WMS-R BIL 32-bit float)
@@ -312,6 +319,40 @@ namespace GeoUnity.Ign
             }
 
             return allWater;
+        }
+
+        public async Task<List<RoadSegmentData>> DownloadRoadsAsync(GeoSector sector, int maxFeatures = 3000)
+        {
+            const int pageSize = 1000;
+            var allRoads = new List<RoadSegmentData>(256);
+            string bbox = FormatBbox(sector.MinLambertX, sector.MinLambertY, sector.MaxLambertX, sector.MaxLambertY);
+            string cacheDir = GetSectorCacheDir(sector);
+
+            for (int startIndex = 0; startIndex < maxFeatures; startIndex += pageSize)
+            {
+                string cachePath = Path.Combine(cacheDir, $"roads_{startIndex}.json");
+                string json = TryReadCacheText(cachePath);
+
+                if (string.IsNullOrEmpty(json))
+                {
+                    string url = $"{WfsBaseUrl}?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature" +
+                                 $"&TYPENAMES=BDTOPO_V3:troncon_de_route&SRSNAME=EPSG:2154" +
+                                 $"&BBOX={bbox},EPSG:2154&OUTPUTFORMAT=application/json" +
+                                 $"&PROPERTYNAME=geometrie,largeur_de_chaussee,nature" +
+                                 $"&COUNT={pageSize}&STARTINDEX={startIndex}";
+
+                    byte[] bytes = await DownloadBytesAsync(url, 30);
+                    if (bytes == null || bytes.Length == 0) break;
+                    json = System.Text.Encoding.UTF8.GetString(bytes);
+                    WriteCacheSafe(cachePath, bytes);
+                }
+
+                int parsed = ParseGeoJsonRoads(json, sector.CenterLambertX, sector.CenterLambertY, allRoads);
+                if (parsed < pageSize)
+                    break;
+            }
+
+            return allRoads;
         }
 
         private static string FormatBbox(double minX, double minY, double maxX, double maxY)
@@ -635,6 +676,105 @@ namespace GeoUnity.Ign
                         if (ring.Count >= 3)
                             output.Add(new VegetationZoneData { OuterRingLocal = ring, Nature = nature });
                     }
+                }
+            }
+        }
+
+        private static int ParseGeoJsonRoads(string json, double centerX, double centerY, List<RoadSegmentData> output)
+        {
+            if (string.IsNullOrEmpty(json)) return 0;
+
+            int featureCount = 0;
+            int idx = json.IndexOf("\"features\"", StringComparison.Ordinal);
+            if (idx < 0) return 0;
+            idx = json.IndexOf('[', idx);
+            if (idx < 0) return 0;
+            idx++;
+
+            int len = json.Length;
+            while (idx < len)
+            {
+                SkipWhitespace(json, ref idx);
+                if (idx >= len || json[idx] == ']') break;
+                if (json[idx] == ',') { idx++; continue; }
+                if (json[idx] != '{') break;
+
+                int objStart = idx;
+                int objEnd = FindMatchingBrace(json, objStart);
+                if (objEnd < 0) break;
+
+                featureCount++;
+                ParseSingleRoadFeature(json, objStart, objEnd, centerX, centerY, output);
+                idx = objEnd + 1;
+            }
+
+            return featureCount;
+        }
+
+        private static void ParseSingleRoadFeature(string json, int start, int end, double centerX, double centerY, List<RoadSegmentData> output)
+        {
+            float width = 6.0f;
+            string nature = null;
+
+            int propsIdx = json.IndexOf("\"properties\"", start, end - start, StringComparison.Ordinal);
+            if (propsIdx >= 0)
+            {
+                int propsStart = json.IndexOf('{', propsIdx, end - propsIdx);
+                if (propsStart >= 0)
+                {
+                    int propsEnd = FindMatchingBrace(json, propsStart);
+                    if (propsEnd > propsStart && propsEnd <= end)
+                    {
+                        if (TryReadFloatProperty(json, propsStart, propsEnd, "\"largeur_de_chaussee\"", out float w) && w > 1.5f)
+                            width = Mathf.Clamp(w, 3.0f, 24.0f);
+                        nature = ReadStringProperty(json, propsStart, propsEnd, "\"nature\"");
+                    }
+                }
+            }
+
+            // Skip pedestrian-only trails/stairs so Car mode stays on drivable roads
+            if (!string.IsNullOrEmpty(nature) &&
+                (nature.Contains("Sentier", StringComparison.OrdinalIgnoreCase) ||
+                 nature.Contains("Escalier", StringComparison.OrdinalIgnoreCase)))
+                return;
+
+            int geomIdx = json.IndexOf("\"geometry\"", start, end - start, StringComparison.Ordinal);
+            if (geomIdx < 0) return;
+            int coordsIdx = json.IndexOf("\"coordinates\"", geomIdx, end - geomIdx, StringComparison.Ordinal);
+            if (coordsIdx < 0) return;
+
+            bool isMultiLine = json.IndexOf("\"MultiLineString\"", geomIdx, coordsIdx - geomIdx, StringComparison.Ordinal) >= 0;
+            int arrayStart = json.IndexOf('[', coordsIdx, end - coordsIdx);
+            if (arrayStart < 0) return;
+
+            if (isMultiLine)
+            {
+                int p = arrayStart + 1;
+                while (p < end)
+                {
+                    SkipWhitespace(json, ref p);
+                    if (p >= end || json[p] == ']') break;
+                    if (json[p] == ',') { p++; continue; }
+                    if (json[p] == '[')
+                    {
+                        int lineEnd = FindMatchingBracket(json, p, end);
+                        if (lineEnd < 0) break;
+                        var pts = ParseCoordinateRing(json, p, lineEnd, centerX, centerY);
+                        if (pts.Count >= 2)
+                            output.Add(new RoadSegmentData { PointsLocal = pts, WidthMeters = width, Nature = nature });
+                        p = lineEnd + 1;
+                    }
+                    else break;
+                }
+            }
+            else
+            {
+                int lineEnd = FindMatchingBracket(json, arrayStart, end);
+                if (lineEnd > arrayStart)
+                {
+                    var pts = ParseCoordinateRing(json, arrayStart, lineEnd, centerX, centerY);
+                    if (pts.Count >= 2)
+                        output.Add(new RoadSegmentData { PointsLocal = pts, WidthMeters = width, Nature = nature });
                 }
             }
         }

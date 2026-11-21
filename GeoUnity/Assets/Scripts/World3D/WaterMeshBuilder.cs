@@ -88,6 +88,7 @@ namespace GeoUnity.World3D
             mesh.RecalculateBounds();
 
             root.AddComponent<MeshFilter>().sharedMesh = mesh;
+            root.AddComponent<MeshCollider>().sharedMesh = mesh;
             var mr = root.AddComponent<MeshRenderer>();
             mr.shadowCastingMode = ShadowCastingMode.Off;
 

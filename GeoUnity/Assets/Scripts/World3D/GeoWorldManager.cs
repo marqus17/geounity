@@ -23,10 +23,26 @@ namespace GeoUnity.World3D
         [SerializeField] private UnityEngine.UI.Button backToMapButton;
         [SerializeField] private UnityEngine.UI.Button resetCameraButton;
         [SerializeField] private OrbitFlyCameraController cameraController;
+        [SerializeField] private VehicleModeController vehicleController;
+        [SerializeField] private UnityEngine.UI.Button modeCameraButton;
+        [SerializeField] private UnityEngine.UI.Button modeUlmButton;
+        [SerializeField] private UnityEngine.UI.Button modeCarButton;
 
         private Ign3DDataClient _dataClient;
         private GameObject _worldRoot;
         private bool _isLoading;
+
+        public void ConfigureVehicleControls(
+            VehicleModeController vehicleCtrl,
+            UnityEngine.UI.Button camBtn,
+            UnityEngine.UI.Button ulmBtn,
+            UnityEngine.UI.Button carBtn)
+        {
+            vehicleController = vehicleCtrl;
+            modeCameraButton = camBtn;
+            modeUlmButton = ulmBtn;
+            modeCarButton = carBtn;
+        }
 
         public void Configure(
             MapSelectorController selector,
@@ -69,6 +85,16 @@ namespace GeoUnity.World3D
                     if (cameraController != null) cameraController.ResetView(false);
                 });
 
+            if (modeCameraButton != null)
+                modeCameraButton.onClick.AddListener(() => vehicleController?.SetMode(ControlMode.Camera));
+            if (modeUlmButton != null)
+                modeUlmButton.onClick.AddListener(() => vehicleController?.SetMode(ControlMode.Ulm));
+            if (modeCarButton != null)
+                modeCarButton.onClick.AddListener(() => vehicleController?.SetMode(ControlMode.Car));
+
+            if (vehicleController != null)
+                vehicleController.OnModeChanged += UpdateModeButtonsVisual;
+
             ShowMapSelectorState();
         }
 
@@ -98,7 +124,7 @@ namespace GeoUnity.World3D
                     _worldRoot = null;
                 }
 
-                // Download DEM, Orthophoto, Buildings, Vegetation, and Water in parallel
+                // Download DEM, Orthophoto, Buildings, Vegetation, Water, and Roads in parallel
                 var demTask = _dataClient.DownloadElevationGridAsync(sector, resolution: 257);
                 var orthoTask = _dataClient.DownloadOrthophotoAsync(sector, size: 2048);
                 var buildingsTask = _dataClient.DownloadBuildingsAsync(sector, maxFeatures: 12000, count =>
@@ -107,21 +133,24 @@ namespace GeoUnity.World3D
                 });
                 var vegetationTask = _dataClient.DownloadVegetationAsync(sector, maxFeatures: 2000);
                 var waterTask = _dataClient.DownloadWaterAsync(sector, maxFeatures: 1000);
+                var roadsTask = _dataClient.DownloadRoadsAsync(sector, maxFeatures: 3000);
 
-                await Task.WhenAll(demTask, orthoTask, buildingsTask, vegetationTask, waterTask);
+                await Task.WhenAll(demTask, orthoTask, buildingsTask, vegetationTask, waterTask, roadsTask);
 
                 var grid = demTask.Result;
                 var ortho = orthoTask.Result;
                 var buildings = buildingsTask.Result;
                 var vegetation = vegetationTask.Result;
                 var water = waterTask.Result;
+                var roads = roadsTask.Result;
 
-                SetLoading(true, $"Génération 3D ({buildings.Count} bâtiments, {vegetation.Count} forêts, {water.Count} plans d'eau)...");
+                SetLoading(true, $"Génération 3D ({buildings.Count} bâtiments, {roads.Count} routes, {vegetation.Count} forêts)...");
                 await Task.Yield();
 
                 _worldRoot = new GameObject($"GeoWorld_{Math.Round(sector.CenterLambertX)}_{Math.Round(sector.CenterLambertY)}");
                 TerrainMeshBuilder.Build(sector, grid, ortho, _worldRoot.transform);
                 WaterMeshBuilder.Build(sector, grid, water, _worldRoot.transform);
+                RoadOverlayBuilder.Build(sector, grid, roads, _worldRoot.transform, out var roadNetwork);
                 BuildingMeshBuilder.Build(sector, grid, buildings, _worldRoot.transform);
                 VegetationBuilder.Build(sector, grid, vegetation, _worldRoot.transform, out int treeCount);
 
@@ -137,19 +166,27 @@ namespace GeoUnity.World3D
                     cameraController.SetControlsEnabled(true);
                 }
 
+                if (vehicleController != null)
+                    vehicleController.SetWorldData(sector, grid, roadNetwork);
+
+                if (modeCarButton != null)
+                    modeCarButton.interactable = roadNetwork.SegmentCount > 0;
+
+                UpdateModeButtonsVisual(ControlMode.Camera);
+
                 if (worldInfoText != null)
                 {
                     worldInfoText.text =
                         $"Secteur 2 km × 2 km  |  {sector.CenterLat:F4}° N, {sector.CenterLon:F4}° E\n" +
-                        $"Relief : {grid.MinElevation:F0}–{grid.MaxElevation:F0} m  |  Bâtiments : {buildings.Count}  |  Arbres : {treeCount}  |  Eau : {water.Count}\n" +
-                        $"Clic gauche / ZQSD : Déplacer  ·  Clic droit : Orbiter  ·  Molette : Zoom  ·  R : Recentrer";
+                        $"Relief : {grid.MinElevation:F0}–{grid.MaxElevation:F0} m  |  Bâtiments : {buildings.Count}  |  Routes : {roads.Count}  |  Arbres : {treeCount}\n" +
+                        $"Caméra : Clic G/ZQSD + Clic D + Molette  ·  ULM / Voiture : ZQSD/Flèches + R";
                 }
 
                 // Switch UI to 3D View
                 if (mapSelectorCanvas != null) mapSelectorCanvas.SetActive(false);
                 if (worldHudCanvas != null) worldHudCanvas.SetActive(true);
 
-                Debug.Log($"[GeoWorldManager] Built 3D sector: {buildings.Count} buildings, {treeCount} trees, {water.Count} water polygons, elev {grid.MinElevation:F1}m..{grid.MaxElevation:F1}m.");
+                Debug.Log($"[GeoWorldManager] Built 3D sector: {buildings.Count} buildings, {roads.Count} roads ({roadNetwork.SegmentCount} segs), {treeCount} trees, {water.Count} water.");
             }
             catch (Exception ex)
             {
@@ -171,9 +208,20 @@ namespace GeoUnity.World3D
         private void ShowMapSelectorState()
         {
             if (cameraController != null) cameraController.SetControlsEnabled(false);
+            if (vehicleController != null) vehicleController.DisableAll();
             if (mapSelectorCanvas != null) mapSelectorCanvas.SetActive(true);
             if (worldHudCanvas != null) worldHudCanvas.SetActive(false);
             if (loadingOverlay != null) loadingOverlay.SetActive(false);
+        }
+
+        private void UpdateModeButtonsVisual(ControlMode active)
+        {
+            Color activeCol = new Color(0.10f, 0.58f, 0.85f, 1f);
+            Color idleCol = new Color(0.16f, 0.22f, 0.30f, 1f);
+
+            if (modeCameraButton != null) modeCameraButton.GetComponent<UnityEngine.UI.Image>().color = active == ControlMode.Camera ? activeCol : idleCol;
+            if (modeUlmButton != null) modeUlmButton.GetComponent<UnityEngine.UI.Image>().color = active == ControlMode.Ulm ? activeCol : idleCol;
+            if (modeCarButton != null) modeCarButton.GetComponent<UnityEngine.UI.Image>().color = active == ControlMode.Car ? activeCol : idleCol;
         }
 
         private void SetLoading(bool visible, string message)
