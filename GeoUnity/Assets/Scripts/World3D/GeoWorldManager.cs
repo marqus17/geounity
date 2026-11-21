@@ -124,7 +124,7 @@ namespace GeoUnity.World3D
                     _worldRoot = null;
                 }
 
-                // Download DEM, Orthophoto, Buildings, Vegetation, Water, and Roads in parallel
+                // Download DEM, Orthophoto, Buildings, Vegetation, Water, Roads, RPG Crops, and OSM Road Signs in parallel
                 var demTask = _dataClient.DownloadElevationGridAsync(sector, resolution: 257);
                 var orthoTask = _dataClient.DownloadOrthophotoAsync(sector, size: 2048);
                 var buildingsTask = _dataClient.DownloadBuildingsAsync(sector, maxFeatures: 12000, count =>
@@ -134,8 +134,10 @@ namespace GeoUnity.World3D
                 var vegetationTask = _dataClient.DownloadVegetationAsync(sector, maxFeatures: 2000);
                 var waterTask = _dataClient.DownloadWaterAsync(sector, maxFeatures: 1000);
                 var roadsTask = _dataClient.DownloadRoadsAsync(sector, maxFeatures: 3000);
+                var cropsTask = _dataClient.DownloadCropParcelsAsync(sector, maxFeatures: 1000);
+                var signsTask = _dataClient.DownloadRoadSignsAsync(sector);
 
-                await Task.WhenAll(demTask, orthoTask, buildingsTask, vegetationTask, waterTask, roadsTask);
+                await Task.WhenAll(demTask, orthoTask, buildingsTask, vegetationTask, waterTask, roadsTask, cropsTask, signsTask);
 
                 var grid = demTask.Result;
                 var ortho = orthoTask.Result;
@@ -143,8 +145,10 @@ namespace GeoUnity.World3D
                 var vegetation = vegetationTask.Result;
                 var water = waterTask.Result;
                 var roads = roadsTask.Result;
+                var crops = cropsTask.Result;
+                var signs = signsTask.Result;
 
-                SetLoading(true, $"Génération 3D ({buildings.Count} bâtiments, {roads.Count} routes, {vegetation.Count} forêts)...");
+                SetLoading(true, $"Génération 3D ({buildings.Count} bâtiments, {roads.Count} routes, {crops.Count} RPG, {signs.Count} feux/panneaux)...");
                 await Task.Yield();
 
                 _worldRoot = new GameObject($"GeoWorld_{Math.Round(sector.CenterLambertX)}_{Math.Round(sector.CenterLambertY)}");
@@ -153,6 +157,8 @@ namespace GeoUnity.World3D
                 RoadOverlayBuilder.Build(sector, grid, roads, _worldRoot.transform, out var roadNetwork);
                 BuildingMeshBuilder.Build(sector, grid, buildings, _worldRoot.transform);
                 VegetationBuilder.Build(sector, grid, vegetation, _worldRoot.transform, out int treeCount);
+                CropFieldBuilder.Build(sector, grid, crops, _worldRoot.transform, out int cropCount);
+                RoadSignBuilder.Build(sector, grid, signs, _worldRoot.transform);
 
                 float centerHeight = grid.SampleHeight(sector.CenterLambertX, sector.CenterLambertY) - grid.MinElevation;
 
@@ -178,7 +184,7 @@ namespace GeoUnity.World3D
                 {
                     worldInfoText.text =
                         $"Secteur 2 km × 2 km  |  {sector.CenterLat:F4}° N, {sector.CenterLon:F4}° E\n" +
-                        $"Relief : {grid.MinElevation:F0}–{grid.MaxElevation:F0} m  |  Bâtiments : {buildings.Count}  |  Routes : {roads.Count}  |  Arbres : {treeCount}\n" +
+                        $"Bâtiments : {buildings.Count}  |  Routes : {roads.Count}  |  RPG : {crops.Count}  |  Feux/Panneaux : {signs.Count}\n" +
                         $"Caméra : Clic G/ZQSD + Clic D + Molette  ·  ULM / Voiture : ZQSD/Flèches + R";
                 }
 
@@ -186,7 +192,7 @@ namespace GeoUnity.World3D
                 if (mapSelectorCanvas != null) mapSelectorCanvas.SetActive(false);
                 if (worldHudCanvas != null) worldHudCanvas.SetActive(true);
 
-                Debug.Log($"[GeoWorldManager] Built 3D sector: {buildings.Count} buildings, {roads.Count} roads ({roadNetwork.SegmentCount} segs), {treeCount} trees, {water.Count} water.");
+                Debug.Log($"[GeoWorldManager] Built 3D sector: {buildings.Count} buildings, {roads.Count} roads ({roadNetwork.SegmentCount} segs), {treeCount} trees, {crops.Count} RPG ({cropCount} built), {signs.Count} signs, {water.Count} water.");
             }
             catch (Exception ex)
             {
