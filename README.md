@@ -22,6 +22,8 @@ Toutes les couches sont téléchargées en parallèle dans la projection métriq
 | **Bâtiments 3D** | `WFS 2.0.0` `BDTOPO_V3:batiment` (GeoJSON paginé jusqu'à 12 000 objets) | Extrusion procédurale, **toits en pente (4 pans / croupes)** ou terrasses, fondations calées sur le relief, **textures procédurales** de façades & toitures avec UVs métriques |
 | **Végétation** | `WFS 2.0.0` `BDTOPO_V3:zone_de_vegetation` | Forêts 3D (**conifères**, **feuillus**, **mixte**, **arbustes/haies**) distribuées par *Point-in-Polygon* sur le relief |
 | **Eau** | `WFS 2.0.0` `BDTOPO_V3:surface_hydrographique` | Surfaces découpées (Sutherland-Hodgman) avec **shader URP d'eau translucide**, vagues animées, reflets Fresnel et reflets solaires |
+| **Cultures (RPG 2024)** | `WFS 2.0.0` `IGNF_RPG_PARCELLES-AGRICOLES-CATEGORISEES_2024` | Volumes bas translucides à sillons, subdivisés pour épouser le relief (`blé`, `colza/tournesol`, `maïs`, `vignes`, `vergers`, `prairies`) + **légende minimisable** |
+| **Signalisation** | **OpenStreetMap Overpass France** (`overpass.openstreetmap.fr`) | **Feux tricolores**, panneaux **Stop** et **Cédez-le-passage** 3D batchés aux carrefours |
 
 ---
 
@@ -33,7 +35,7 @@ Toutes les couches sont téléchargées en parallèle dans la projection métriq
 ### Lancer le projet
 1. Cloner le dépôt :
    ```bash
-   git clone <url-du-repo>
+   git clone git@github.com:marqus17/geounity.git
    ```
 2. Ouvrir le dossier `GeoUnity/` dans Unity (`6000.6.9f1`).
 3. Ouvrir la scène `Assets/default.unity` et appuyer sur **Play**.
@@ -81,18 +83,23 @@ Assets/
 │       ├── ArchitecturalTextureGenerator.cs# Textures procédurales 512x512 (façades & toits)
 │       ├── VegetationBuilder.cs            # Arbres & forêts 3D batchés depuis BD TOPO
 │       ├── WaterMeshBuilder.cs             # Surfaces d'eau découpées & calées sur le MNT
+│       ├── CropFieldBuilder.cs             # Volumes bas translucides RPG 2024 calés sur le relief
+│       ├── RoadSignBuilder.cs              # Feux tricolores & panneaux Stop / Cédez-le-passage (OSM)
+│       ├── CropLegendToggle.cs             # Panneau de légende des cultures minimisable
 │       ├── EarCut2D.cs                     # Triangulateur 2D de polygones concaves
 │       └── OrbitFlyCameraController.cs     # Caméra 3D orbit / pan / zoom
 └── Shaders/
-    └── GeoUnityWater.shader                # Shader URP eau translucide, vagues animées & Fresnel
+    ├── GeoUnityWater.shader                # Shader URP eau translucide, vagues animées & Fresnel
+    └── GeoUnityCropField.shader            # Shader URP parcelles agricoles translucides à sillons
 ```
 
 ---
 
 ## Crédits & données
 
-Données géographiques ouvertes fournies par l'**IGN — Géoplateforme** (Licence Ouverte / Open Licence Etalab 2.0) :
+Données géographiques ouvertes fournies par l'**IGN — Géoplateforme** (Licence Ouverte / Open Licence Etalab 2.0) et **OpenStreetMap** (ODbL) :
 - WMTS : `GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2`, `ORTHOIMAGERY.ORTHOPHOTOS`
 - WMS-R : `ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES` (RGE ALTI), `ORTHOIMAGERY.ORTHOPHOTOS`
-- WFS : `BDTOPO_V3:batiment`, `BDTOPO_V3:zone_de_vegetation`, `BDTOPO_V3:surface_hydrographique`
+- WFS : `BDTOPO_V3:batiment`, `BDTOPO_V3:zone_de_vegetation`, `BDTOPO_V3:surface_hydrographique`, `IGNF_RPG_PARCELLES-AGRICOLES-CATEGORISEES_2024:parcelles_agricole_categorisees_2024`
 - Géocodage : `data.geopf.fr/geocodage/search`
+- Signalisation routière : **OpenStreetMap** via Overpass France (`overpass.openstreetmap.fr`)
