@@ -73,6 +73,25 @@ namespace GeoUnity.Ign
         public string Nature;
     }
 
+    public class CropParcelData
+    {
+        public List<Vector2> OuterRingLocal;
+        public string CropCode;
+    }
+
+    public enum RoadSignKind
+    {
+        TrafficSignal,
+        Stop,
+        GiveWay
+    }
+
+    public struct RoadSignData
+    {
+        public Vector2 LocalPos;
+        public RoadSignKind Kind;
+    }
+
     /// <summary>
     /// Downloads IGN Geoplateforme 3D data in Lambert-93 (EPSG:2154) for a GeoSector:
     /// - RGE ALTI elevation grid (WMS-R BIL 32-bit float)
@@ -314,6 +333,79 @@ namespace GeoUnity.Ign
             return allWater;
         }
 
+        public async Task<List<CropParcelData>> DownloadCropParcelsAsync(GeoSector sector, int maxFeatures = 1000)
+        {
+            const int pageSize = 500;
+            var allParcels = new List<CropParcelData>(128);
+            string bbox = FormatBbox(sector.MinLambertX, sector.MinLambertY, sector.MaxLambertX, sector.MaxLambertY);
+            string cacheDir = GetSectorCacheDir(sector);
+
+            for (int startIndex = 0; startIndex < maxFeatures; startIndex += pageSize)
+            {
+                string cachePath = Path.Combine(cacheDir, $"rpg2024_{startIndex}.json");
+                string json = TryReadCacheText(cachePath);
+
+                if (string.IsNullOrEmpty(json))
+                {
+                    string url = $"{WfsBaseUrl}?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature" +
+                                 $"&TYPENAMES=IGNF_RPG_PARCELLES-AGRICOLES-CATEGORISEES_2024:parcelles_agricole_categorisees_2024" +
+                                 $"&SRSNAME=EPSG:2154&BBOX={bbox},EPSG:2154&OUTPUTFORMAT=application/json" +
+                                 $"&PROPERTYNAME=geom,code_cultu&COUNT={pageSize}&STARTINDEX={startIndex}";
+
+                    byte[] bytes = await DownloadBytesAsync(url, 25);
+                    if (bytes == null || bytes.Length == 0) break;
+                    json = System.Text.Encoding.UTF8.GetString(bytes);
+                    WriteCacheSafe(cachePath, bytes);
+                }
+
+                int parsed = ParseGeoJsonCrops(json, sector.CenterLambertX, sector.CenterLambertY, allParcels);
+                if (parsed < pageSize)
+                    break;
+            }
+
+            return allParcels;
+        }
+
+        public async Task<List<RoadSignData>> DownloadRoadSignsAsync(GeoSector sector)
+        {
+            var signs = new List<RoadSignData>(128);
+            string cachePath = Path.Combine(GetSectorCacheDir(sector), "osm_signs.json");
+            string json = TryReadCacheText(cachePath);
+
+            if (string.IsNullOrEmpty(json))
+            {
+                string query = string.Format(Inv,
+                    "[out:json][timeout:10];node[\"highway\"~\"^(traffic_signals|stop|give_way)$\"]({0:F5},{1:F5},{2:F5},{3:F5});out body;",
+                    sector.MinLat, sector.MinLon, sector.MaxLat, sector.MaxLon);
+                string encoded = UnityWebRequest.EscapeURL(query);
+
+                // shortcut: try 2 public Overpass endpoints with short timeout and silent fallback if busy
+                string[] endpoints =
+                {
+                    "https://overpass-api.de/api/interpreter?data=",
+                    "https://overpass.private.coffee/api/interpreter?data="
+                };
+
+                byte[] bytes = null;
+                foreach (var ep in endpoints)
+                {
+                    bytes = await DownloadBytesAsync(ep + encoded, 12, "GeoUnity/1.0");
+                    if (bytes != null && bytes.Length > 0 && bytes[0] == (byte)'{')
+                        break;
+                    bytes = null;
+                }
+
+                if (bytes == null)
+                    return signs;
+
+                json = System.Text.Encoding.UTF8.GetString(bytes);
+                WriteCacheSafe(cachePath, bytes);
+            }
+
+            ParseOverpassSigns(json, sector.CenterLambertX, sector.CenterLambertY, signs);
+            return signs;
+        }
+
         private static string FormatBbox(double minX, double minY, double maxX, double maxY)
         {
             return string.Format(Inv, "{0:F2},{1:F2},{2:F2},{3:F2}", minX, minY, maxX, maxY);
@@ -337,10 +429,15 @@ namespace GeoUnity.Ign
             };
         }
 
-        private static async Task<byte[]> DownloadBytesAsync(string url, int timeoutSec)
+        private static async Task<byte[]> DownloadBytesAsync(string url, int timeoutSec, string userAgent = null)
         {
             using var req = UnityWebRequest.Get(url);
             req.timeout = timeoutSec;
+            if (!string.IsNullOrEmpty(userAgent))
+            {
+                req.SetRequestHeader("User-Agent", userAgent);
+                req.SetRequestHeader("Accept", "application/json");
+            }
             var op = req.SendWebRequest();
             while (!op.isDone)
             {
@@ -637,6 +734,152 @@ namespace GeoUnity.Ign
                     }
                 }
             }
+        }
+
+        private static int ParseGeoJsonCrops(string json, double centerX, double centerY, List<CropParcelData> output)
+        {
+            if (string.IsNullOrEmpty(json)) return 0;
+
+            int featureCount = 0;
+            int idx = json.IndexOf("\"features\"", StringComparison.Ordinal);
+            if (idx < 0) return 0;
+            idx = json.IndexOf('[', idx);
+            if (idx < 0) return 0;
+            idx++;
+
+            while (idx < json.Length)
+            {
+                SkipWhitespace(json, ref idx);
+                if (idx >= json.Length || json[idx] == ']') break;
+                if (json[idx] == ',') { idx++; continue; }
+                if (json[idx] != '{') break;
+
+                int objStart = idx;
+                int objEnd = FindMatchingBrace(json, objStart);
+                if (objEnd < 0) break;
+
+                featureCount++;
+                string code = ReadStringProperty(json, objStart, objEnd, "\"code_cultu\"");
+                int geomIdx = json.IndexOf("\"geometry\"", objStart, objEnd - objStart, StringComparison.Ordinal);
+                if (geomIdx >= 0)
+                {
+                    int coordsIdx = json.IndexOf("\"coordinates\"", geomIdx, objEnd - geomIdx, StringComparison.Ordinal);
+                    if (coordsIdx >= 0)
+                    {
+                        bool isMulti = json.IndexOf("\"MultiPolygon\"", geomIdx, coordsIdx - geomIdx, StringComparison.Ordinal) >= 0;
+                        int arrStart = json.IndexOf('[', coordsIdx, objEnd - coordsIdx);
+                        if (arrStart >= 0)
+                        {
+                            if (isMulti)
+                            {
+                                int p = arrStart + 1;
+                                while (p < objEnd)
+                                {
+                                    SkipWhitespace(json, ref p);
+                                    if (p >= objEnd || json[p] == ']') break;
+                                    if (json[p] == ',') { p++; continue; }
+                                    if (json[p] == '[')
+                                    {
+                                        int polyEnd = FindMatchingBracket(json, p, objEnd);
+                                        if (polyEnd < 0) break;
+                                        int ringStart = json.IndexOf('[', p + 1, polyEnd - p - 1);
+                                        if (ringStart >= 0)
+                                        {
+                                            int ringEnd = FindMatchingBracket(json, ringStart, polyEnd);
+                                            if (ringEnd > ringStart)
+                                            {
+                                                var ring = ParseCoordinateRing(json, ringStart, ringEnd, centerX, centerY);
+                                                if (ring.Count >= 3)
+                                                    output.Add(new CropParcelData { OuterRingLocal = ring, CropCode = code });
+                                            }
+                                        }
+                                        p = polyEnd + 1;
+                                    }
+                                    else break;
+                                }
+                            }
+                            else
+                            {
+                                int ringStart = json.IndexOf('[', arrStart + 1, objEnd - arrStart - 1);
+                                if (ringStart >= 0)
+                                {
+                                    int ringEnd = FindMatchingBracket(json, ringStart, objEnd);
+                                    if (ringEnd > ringStart)
+                                    {
+                                        var ring = ParseCoordinateRing(json, ringStart, ringEnd, centerX, centerY);
+                                        if (ring.Count >= 3)
+                                            output.Add(new CropParcelData { OuterRingLocal = ring, CropCode = code });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                idx = objEnd + 1;
+            }
+            return featureCount;
+        }
+
+        private static void ParseOverpassSigns(string json, double centerX, double centerY, List<RoadSignData> output)
+        {
+            if (string.IsNullOrEmpty(json)) return;
+            int idx = json.IndexOf("\"elements\"", StringComparison.Ordinal);
+            if (idx < 0) return;
+            idx = json.IndexOf('[', idx);
+            if (idx < 0) return;
+            idx++;
+
+            while (idx < json.Length)
+            {
+                SkipWhitespace(json, ref idx);
+                if (idx >= json.Length || json[idx] == ']') break;
+                if (json[idx] == ',') { idx++; continue; }
+                if (json[idx] != '{') break;
+
+                int objStart = idx;
+                int objEnd = FindMatchingBrace(json, objStart);
+                if (objEnd < 0) break;
+
+                if (TryReadDoubleProperty(json, objStart, objEnd, "\"lat\"", out double lat) &&
+                    TryReadDoubleProperty(json, objStart, objEnd, "\"lon\"", out double lon))
+                {
+                    string hw = ReadStringProperty(json, objStart, objEnd, "\"highway\"");
+                    RoadSignKind? kind = hw switch
+                    {
+                        "traffic_signals" => RoadSignKind.TrafficSignal,
+                        "stop" => RoadSignKind.Stop,
+                        "give_way" => RoadSignKind.GiveWay,
+                        _ => null
+                    };
+
+                    if (kind.HasValue)
+                    {
+                        GeoProjection.Wgs84ToLambert93(lat, lon, out double lx, out double ly);
+                        output.Add(new RoadSignData
+                        {
+                            LocalPos = new Vector2((float)(lx - centerX), (float)(ly - centerY)),
+                            Kind = kind.Value
+                        });
+                    }
+                }
+                idx = objEnd + 1;
+            }
+        }
+
+        private static bool TryReadDoubleProperty(string json, int start, int end, string key, out double value)
+        {
+            value = 0.0;
+            int k = json.IndexOf(key, start, end - start, StringComparison.Ordinal);
+            if (k < 0) return false;
+            int colon = json.IndexOf(':', k + key.Length, end - (k + key.Length));
+            if (colon < 0) return false;
+            int p = colon + 1;
+            SkipWhitespace(json, ref p);
+            if (p >= end || json[p] == 'n') return false;
+            int valEnd = p;
+            while (valEnd < end && (char.IsDigit(json[valEnd]) || json[valEnd] == '.' || json[valEnd] == '-' || json[valEnd] == 'e' || json[valEnd] == 'E' || json[valEnd] == '+'))
+                valEnd++;
+            return double.TryParse(json.AsSpan(p, valEnd - p), NumberStyles.Float, Inv, out value);
         }
 
         private static bool TryReadFloatProperty(string json, int start, int end, string key, out float value)
