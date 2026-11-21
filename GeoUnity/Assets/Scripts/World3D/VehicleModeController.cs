@@ -60,8 +60,16 @@ namespace GeoUnity.World3D
 
         // Toast timer
         private float _toastTimer;
+        private VehicleAudioController _audio;
 
         private readonly Collider[] _overlapBuffer = new Collider[8];
+
+        private void Awake()
+        {
+            _audio = GetComponent<VehicleAudioController>();
+            if (_audio == null)
+                _audio = gameObject.AddComponent<VehicleAudioController>();
+        }
 
         public void Configure(OrbitFlyCameraController camCtrl, UnityEngine.UI.Text toastText)
         {
@@ -108,6 +116,7 @@ namespace GeoUnity.World3D
             }
             else
             {
+                _audio?.MuteAll();
                 HideToast();
             }
 
@@ -117,6 +126,7 @@ namespace GeoUnity.World3D
         public void DisableAll()
         {
             _mode = ControlMode.Camera;
+            _audio?.MuteAll();
             if (_ulmRoot != null) _ulmRoot.SetActive(false);
             if (_carRoot != null) _carRoot.SetActive(false);
             HideToast();
@@ -165,6 +175,7 @@ namespace GeoUnity.World3D
 
             if (_ulmCrashed)
             {
+                _audio?.MuteAll();
                 _ulmRespawnTimer -= dt;
                 if (_ulmRespawnTimer <= 0f)
                     SpawnUlm();
@@ -228,6 +239,7 @@ namespace GeoUnity.World3D
                 _ulmPos.y = terrainY + 450f;
 
             ApplyUlmTransform();
+            _audio?.UpdateUlmAudio(_ulmSpeed, 24f, 115f, active: true);
             if (_ulmPropeller != null)
                 _ulmPropeller.Rotate(0f, 0f, 1400f * dt, Space.Self);
 
@@ -318,7 +330,9 @@ namespace GeoUnity.World3D
             _carPos.y = SampleTerrainY(_carPos.x, _carPos.z) + 0.55f;
 
             ApplyCarTransform();
-            AnimateCarDetails(steer, accel < -0.1f, dt);
+            bool braking = accel < -0.1f && _carSpeed > 0.5f;
+            AnimateCarDetails(steer, braking, dt);
+            _audio?.UpdateCarAudio(_carSpeed, 38f, braking, active: true);
 
             // Check road adherence, border, building collision, and water collision
             if (_carResetCooldown <= 0f)
