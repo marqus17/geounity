@@ -19,7 +19,9 @@ Toutes les couches sont téléchargées en parallèle dans la projection métriq
 | :--- | :--- | :--- |
 | **Relief (MNT)** | `WMS-R` `ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES` (RGE ALTI, format `BIL 32-bit float`) | Mesh terrain `257 × 257` (`UInt32`) + jupe diorama |
 | **Texture sol** | `WMS-R` `ORTHOIMAGERY.ORTHOPHOTOS` (`2048 × 2048` en `EPSG:2154`) | Orthophoto haute résolution alignée au pixel près sur la BBox |
-| **Bâtiments 3D** | `WFS 2.0.0` `BDTOPO_V3:batiment` (GeoJSON paginé jusqu'à 12 000 objets) | Extrusion procédurale, **toits en pente (4 pans / croupes)** ou terrasses, fondations calées sur le relief, **textures procédurales** de façades & toitures avec UVs métriques |
+| **Bâtiments 3D** | `WFS 2.0.0` `BDTOPO_V3:batiment` (GeoJSON paginé jusqu'à 12 000 objets) | Extrusion procédurale, **toits en pente (4 pans / croupes)** ou terrasses, fondations calées sur le relief, **textures procédurales adaptées au type** : maisons (2 pignons crépi blanc, 1 façade porte d'entrée + fenêtre, 1 façade porte-fenêtre), églises/monuments (pierre grise appareillée), industriel/agricole (bardage), immeubles (pierre de taille / brique / verre) |
+| **Ouvrages d'art (Ponts)** | `WFS 2.0.0` `BDTOPO_V3:construction_lineaire` & `construction_surfacique` | **4 modèles de ponts procéduraux** batchés : pont en pierre à arches, viaduc/pont béton à piles, pont métallique à treillis, passerelle piétonne en arc |
+| **Statues & Monuments** | `WFS 2.0.0` `BDTOPO_V3:construction_ponctuelle` + **OSM Overpass** | Modèles 3D batchés : **statues** (en pied, équestre, colonne), **monuments** (obélisque / monument aux morts, arc), **calvaires**, **fontaines**, **châteaux d'eau** et tours |
 | **Végétation** | `WFS 2.0.0` `BDTOPO_V3:zone_de_vegetation` | Forêts 3D (**conifères**, **feuillus**, **mixte**, **arbustes/haies**) distribuées par *Point-in-Polygon* sur le relief |
 | **Eau** | `WFS 2.0.0` `BDTOPO_V3:surface_hydrographique` | Surfaces découpées (Sutherland-Hodgman) avec **shader URP d'eau translucide**, vagues animées, reflets Fresnel et reflets solaires |
 | **Cultures (RPG 2024)** | `WFS 2.0.0` `IGNF_RPG_PARCELLES-AGRICOLES-CATEGORISEES_2024` | Volumes bas translucides à sillons, subdivisés pour épouser le relief (`blé`, `colza/tournesol`, `maïs`, `vignes`, `vergers`, `prairies`) + **légende minimisable** |
@@ -79,8 +81,10 @@ Assets/
 │   └── World3D/
 │       ├── GeoWorldManager.cs              # Orchestration 2D <-> 3D & téléchargements parallèles
 │       ├── TerrainMeshBuilder.cs           # Génération du mesh MNT + orthophoto + jupe diorama
-│       ├── BuildingMeshBuilder.cs          # Extrusion bâtiments, toits en pente & UVs métriques
-│       ├── ArchitecturalTextureGenerator.cs# Textures procédurales 512x512 (façades & toits)
+│       ├── BuildingMeshBuilder.cs          # Extrusion bâtiments, classification par type & façades par côté
+│       ├── ArchitecturalTextureGenerator.cs# Textures procédurales 512x512 (crépi maison, pierre église, bardage, toits)
+│       ├── BridgeBuilder.cs                # 4 modèles de ponts procéduraux (pierre, béton, treillis, passerelle)
+│       ├── LandmarkBuilder.cs              # Statues, monuments, calvaires, fontaines & châteaux d'eau
 │       ├── VegetationBuilder.cs            # Arbres & forêts 3D batchés depuis BD TOPO
 │       ├── WaterMeshBuilder.cs             # Surfaces d'eau découpées & calées sur le MNT
 │       ├── CropFieldBuilder.cs             # Volumes bas translucides RPG 2024 calés sur le relief
@@ -100,6 +104,6 @@ Assets/
 Données géographiques ouvertes fournies par l'**IGN — Géoplateforme** (Licence Ouverte / Open Licence Etalab 2.0) et **OpenStreetMap** (ODbL) :
 - WMTS : `GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2`, `ORTHOIMAGERY.ORTHOPHOTOS`
 - WMS-R : `ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES` (RGE ALTI), `ORTHOIMAGERY.ORTHOPHOTOS`
-- WFS : `BDTOPO_V3:batiment`, `BDTOPO_V3:zone_de_vegetation`, `BDTOPO_V3:surface_hydrographique`, `IGNF_RPG_PARCELLES-AGRICOLES-CATEGORISEES_2024:parcelles_agricole_categorisees_2024`
+- WFS : `BDTOPO_V3:batiment`, `BDTOPO_V3:construction_lineaire`, `BDTOPO_V3:construction_surfacique`, `BDTOPO_V3:construction_ponctuelle`, `BDTOPO_V3:zone_de_vegetation`, `BDTOPO_V3:surface_hydrographique`, `IGNF_RPG_PARCELLES-AGRICOLES-CATEGORISEES_2024:parcelles_agricole_categorisees_2024`
 - Géocodage : `data.geopf.fr/geocodage/search`
-- Signalisation routière : **OpenStreetMap** via Overpass France (`overpass.openstreetmap.fr`)
+- Signalisation routière & monuments : **OpenStreetMap** via Overpass France (`overpass.openstreetmap.fr`)

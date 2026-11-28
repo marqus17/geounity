@@ -9,10 +9,25 @@ namespace GeoUnity.World3D
 {
     /// <summary>
     /// Extrudes IGN BD TOPO building footprints into batched URP 3D meshes grouped by architectural material buckets.
-    /// Automatically conforms building foundations to the RGE ALTI elevation grid with a 3m skirt so nothing floats on slopes.
+    /// Adapts wall textures by building type:
+    /// - Detached houses: 2 plain white crépi gable sides, 1 entry door + window side, 1 porte-fenêtre patio side
+    /// - Churches / castles / historic monuments: grey dressed stone masonry with arched lancet windows
+    /// - Industrial / agricultural hangars: concrete plinth + corrugated cladding
+    /// - Urban apartments / modern commercial: limestone, warm brick, or modern glass
     /// </summary>
     public static class BuildingMeshBuilder
     {
+        private enum BuildingArchetype
+        {
+            DetachedHouse,
+            SmallAnnex,
+            HistoricStone,
+            Industrial,
+            ModernCommercial,
+            UrbanWarm,
+            UrbanLimestone
+        }
+
         private class MeshBucket
         {
             public readonly string Name;
@@ -41,10 +56,15 @@ namespace GeoUnity.World3D
             if (buildings == null || buildings.Count == 0)
                 return root;
 
-            // Textured architectural material buckets (6 draw calls total for thousands of buildings)
+            // Textured architectural material buckets (11 draw calls total for thousands of buildings)
+            var wallHousePlain = new MeshBucket("Walls_HousePlain", Color.white, 0.08f, ArchitecturalTextureGenerator.GetHouseStuccoPlain());
+            var wallHouseEntry = new MeshBucket("Walls_HouseEntry", Color.white, 0.10f, ArchitecturalTextureGenerator.GetHouseStuccoEntry());
+            var wallHousePatio = new MeshBucket("Walls_HousePatio", Color.white, 0.14f, ArchitecturalTextureGenerator.GetHouseStuccoPatio());
+            var wallHistoric = new MeshBucket("Walls_HistoricStone", Color.white, 0.10f, ArchitecturalTextureGenerator.GetHistoricStoneWall());
+            var wallIndustrial = new MeshBucket("Walls_Industrial", Color.white, 0.22f, ArchitecturalTextureGenerator.GetIndustrialCladdingWall());
             var wallLimestone = new MeshBucket("Walls_Limestone", Color.white, 0.14f, ArchitecturalTextureGenerator.GetLimestoneWall());
             var wallWarm = new MeshBucket("Walls_Warm", Color.white, 0.12f, ArchitecturalTextureGenerator.GetWarmWall());
-            var wallModern = new MeshBucket("Walls_Modern", Color.white, 0.30f, ArchitecturalTextureGenerator.GetModernWall());
+            var wallModern = new MeshBucket("Walls_Modern", Color.white, 0.34f, ArchitecturalTextureGenerator.GetModernWall());
 
             var roofSlate = new MeshBucket("Roofs_Slate", Color.white, 0.22f, ArchitecturalTextureGenerator.GetSlateRoof());
             var roofTerracotta = new MeshBucket("Roofs_Terracotta", Color.white, 0.15f, ArchitecturalTextureGenerator.GetTerracottaRoof());
@@ -73,8 +93,12 @@ namespace GeoUnity.World3D
                 if (cleanedRing.Count < 3) continue;
 
                 // Ensure counter-clockwise winding in XZ (positive signed area)
-                if (EarCut2D.SignedArea(cleanedRing) < 0f)
+                float signedArea = EarCut2D.SignedArea(cleanedRing);
+                if (signedArea < 0f)
+                {
                     cleanedRing.Reverse();
+                    signedArea = -signedArea;
+                }
 
                 // Sample terrain height under footprint
                 float minGround = float.MaxValue;
@@ -104,14 +128,22 @@ namespace GeoUnity.World3D
                         topY = altTop;
                 }
 
-                // Pick wall & roof buckets from BD TOPO attributes
-                MeshBucket wallBucket = PickWallBucket(b, wallLimestone, wallWarm, wallModern);
-                MeshBucket roofBucket = PickRoofBucket(b, roofSlate, roofTerracotta, roofFlat);
+                float visibleHeight = Mathf.Max(2.0f, topY - avgGround);
+                BuildingArchetype archetype = ClassifyBuilding(b, visibleHeight, signedArea);
+                MeshBucket roofBucket = PickRoofBucket(b, archetype, cleanedRing[0], roofSlate, roofTerracotta, roofFlat);
 
-                // 1. Extrude Walls (flat-shaded per edge with outward normals & metric facade UVs)
+                // For detached houses, pick which edge gets the front door+window and which opposite edge gets the porte-fenêtre
+                int entryEdgeIdx = -1;
+                int patioEdgeIdx = -1;
+                if (archetype == BuildingArchetype.DetachedHouse)
+                {
+                    SelectHousePrincipalEdges(cleanedRing, out entryEdgeIdx, out patioEdgeIdx);
+                }
+
+                // 1. Extrude Walls (flat-shaded per edge with outward normals & type-adapted UVs)
                 int count = cleanedRing.Count;
                 float wallHeight = Mathf.Max(1f, topY - bottomY);
-                float vRepeat = wallHeight / 6.0f; // 1 texture tile = 2 floors (~6m)
+
                 for (int i = 0; i < count; i++)
                 {
                     Vector2 a = cleanedRing[i];
@@ -122,37 +154,99 @@ namespace GeoUnity.World3D
 
                     // For CCW ring in (X, Z), outward normal is (edge.y, 0, -edge.x)
                     Vector3 normal = new Vector3(edge.y, 0f, -edge.x) / edgeLen;
-                    float uRepeat = edgeLen / 6.0f; // 1 texture tile = 2 window bays (~6m)
 
-                    int vStart = wallBucket.Vertices.Count;
-                    wallBucket.Vertices.Add(new Vector3(a.x, bottomY, a.y));
-                    wallBucket.Vertices.Add(new Vector3(c.x, bottomY, c.y));
-                    wallBucket.Vertices.Add(new Vector3(c.x, topY, c.y));
-                    wallBucket.Vertices.Add(new Vector3(a.x, topY, a.y));
+                    MeshBucket edgeBucket;
+                    float uMax, vMin, vMax;
 
-                    wallBucket.Normals.Add(normal);
-                    wallBucket.Normals.Add(normal);
-                    wallBucket.Normals.Add(normal);
-                    wallBucket.Normals.Add(normal);
+                    if (archetype == BuildingArchetype.DetachedHouse)
+                    {
+                        if (i == entryEdgeIdx)
+                        {
+                            edgeBucket = wallHouseEntry;
+                            uMax = 1.0f; // Single front door + shuttered window across the facade
+                            float topV = visibleHeight <= 5.2f ? 0.56f : 1.0f;
+                            vMin = -(avgGround - bottomY) / Mathf.Max(1f, visibleHeight) * topV;
+                            vMax = topV;
+                        }
+                        else if (i == patioEdgeIdx)
+                        {
+                            edgeBucket = wallHousePatio;
+                            uMax = 1.0f; // Single wide porte-fenêtre on garden facade
+                            float topV = visibleHeight <= 5.2f ? 0.56f : 1.0f;
+                            vMin = -(avgGround - bottomY) / Mathf.Max(1f, visibleHeight) * topV;
+                            vMax = topV;
+                        }
+                        else
+                        {
+                            edgeBucket = wallHousePlain; // Blind white crépi side / gable walls
+                            uMax = edgeLen / 6.0f;
+                            vMin = 0f;
+                            vMax = wallHeight / 6.0f;
+                        }
+                    }
+                    else if (archetype == BuildingArchetype.SmallAnnex)
+                    {
+                        edgeBucket = wallHousePlain;
+                        uMax = edgeLen / 6.0f;
+                        vMin = 0f;
+                        vMax = wallHeight / 6.0f;
+                    }
+                    else if (archetype == BuildingArchetype.HistoricStone)
+                    {
+                        edgeBucket = wallHistoric;
+                        uMax = edgeLen / 8.0f;
+                        vMin = 0f;
+                        vMax = wallHeight / 9.0f;
+                    }
+                    else if (archetype == BuildingArchetype.Industrial)
+                    {
+                        edgeBucket = wallIndustrial;
+                        uMax = edgeLen / 8.0f;
+                        vMin = -(avgGround - bottomY) / Mathf.Max(2f, visibleHeight);
+                        vMax = 1.0f;
+                    }
+                    else
+                    {
+                        edgeBucket = archetype switch
+                        {
+                            BuildingArchetype.ModernCommercial => wallModern,
+                            BuildingArchetype.UrbanWarm => wallWarm,
+                            _ => wallLimestone
+                        };
+                        uMax = edgeLen / 6.0f;
+                        vMin = 0f;
+                        vMax = wallHeight / 6.0f;
+                    }
 
-                    wallBucket.Uvs.Add(new Vector2(0f, 0f));
-                    wallBucket.Uvs.Add(new Vector2(uRepeat, 0f));
-                    wallBucket.Uvs.Add(new Vector2(uRepeat, vRepeat));
-                    wallBucket.Uvs.Add(new Vector2(0f, vRepeat));
+                    int vStart = edgeBucket.Vertices.Count;
+                    edgeBucket.Vertices.Add(new Vector3(a.x, bottomY, a.y));
+                    edgeBucket.Vertices.Add(new Vector3(c.x, bottomY, c.y));
+                    edgeBucket.Vertices.Add(new Vector3(c.x, topY, c.y));
+                    edgeBucket.Vertices.Add(new Vector3(a.x, topY, a.y));
+
+                    edgeBucket.Normals.Add(normal);
+                    edgeBucket.Normals.Add(normal);
+                    edgeBucket.Normals.Add(normal);
+                    edgeBucket.Normals.Add(normal);
+
+                    edgeBucket.Uvs.Add(new Vector2(0f, vMin));
+                    edgeBucket.Uvs.Add(new Vector2(uMax, vMin));
+                    edgeBucket.Uvs.Add(new Vector2(uMax, vMax));
+                    edgeBucket.Uvs.Add(new Vector2(0f, vMax));
 
                     // Outward-facing CW winding when looking at wall from outside
-                    wallBucket.Triangles.Add(vStart);
-                    wallBucket.Triangles.Add(vStart + 3);
-                    wallBucket.Triangles.Add(vStart + 2);
+                    edgeBucket.Triangles.Add(vStart);
+                    edgeBucket.Triangles.Add(vStart + 3);
+                    edgeBucket.Triangles.Add(vStart + 2);
 
-                    wallBucket.Triangles.Add(vStart);
-                    wallBucket.Triangles.Add(vStart + 2);
-                    wallBucket.Triangles.Add(vStart + 1);
+                    edgeBucket.Triangles.Add(vStart);
+                    edgeBucket.Triangles.Add(vStart + 2);
+                    edgeBucket.Triangles.Add(vStart + 1);
                 }
 
-                // 2. Build Roof: sloped hipped roof for residential/compact buildings, flat roof otherwise
-                bool allowSloped = roofBucket != roofFlat && height <= 32f && count <= 10;
-                if (!allowSloped || !TryAddSlopedRoof(roofBucket, cleanedRing, topY))
+                // 2. Build Roof: sloped hipped roof for houses/historic/compact buildings, flat roof otherwise
+                bool allowSloped = roofBucket != roofFlat && visibleHeight <= 32f && count <= 10;
+                if (!allowSloped || !TryAddSlopedRoof(roofBucket, cleanedRing, topY, archetype == BuildingArchetype.HistoricStone))
                 {
                     var roofTris = EarCut2D.Triangulate(cleanedRing);
                     if (roofTris.Count >= 3)
@@ -181,7 +275,14 @@ namespace GeoUnity.World3D
             if (urpShader == null)
                 urpShader = GraphicsSettings.currentRenderPipeline.defaultMaterial.shader;
 
-            var buckets = new[] { wallLimestone, wallWarm, wallModern, roofSlate, roofTerracotta, roofFlat };
+            var buckets = new[]
+            {
+                wallHousePlain, wallHouseEntry, wallHousePatio,
+                wallHistoric, wallIndustrial,
+                wallLimestone, wallWarm, wallModern,
+                roofSlate, roofTerracotta, roofFlat
+            };
+
             foreach (var bucket in buckets)
             {
                 if (bucket.Triangles.Count == 0) continue;
@@ -215,10 +316,135 @@ namespace GeoUnity.World3D
             return root;
         }
 
-        private static bool TryAddSlopedRoof(MeshBucket bucket, List<Vector2> ring, float eaveY)
+        private static BuildingArchetype ClassifyBuilding(BuildingData b, float height, float area)
+        {
+            string nature = b.Nature ?? string.Empty;
+            string usage = b.Usage ?? string.Empty;
+            string wallMat = b.WallMaterial ?? string.Empty;
+
+            // 1. Churches, chapels, castles, towers, forts, historic monuments -> grey dressed stone
+            if (usage.Contains("Religieux", StringComparison.OrdinalIgnoreCase) ||
+                nature.Contains("Eglise", StringComparison.OrdinalIgnoreCase) ||
+                nature.Contains("Église", StringComparison.OrdinalIgnoreCase) ||
+                nature.Contains("Chapelle", StringComparison.OrdinalIgnoreCase) ||
+                nature.Contains("Château", StringComparison.OrdinalIgnoreCase) ||
+                nature.Contains("Chateau", StringComparison.OrdinalIgnoreCase) ||
+                nature.Contains("Monument", StringComparison.OrdinalIgnoreCase) ||
+                nature.Contains("Tour", StringComparison.OrdinalIgnoreCase) ||
+                nature.Contains("Fort", StringComparison.OrdinalIgnoreCase) ||
+                nature.Contains("Arc", StringComparison.OrdinalIgnoreCase) ||
+                nature.Contains("Arène", StringComparison.OrdinalIgnoreCase))
+            {
+                return BuildingArchetype.HistoricStone;
+            }
+
+            // 2. Industrial / Agricultural / Sports halls / Silos -> ribbed cladding + concrete plinth
+            if (usage.Contains("Industriel", StringComparison.OrdinalIgnoreCase) ||
+                usage.Contains("Agricole", StringComparison.OrdinalIgnoreCase) ||
+                usage.Contains("Sportif", StringComparison.OrdinalIgnoreCase) ||
+                nature.Contains("Industriel", StringComparison.OrdinalIgnoreCase) ||
+                nature.Contains("Silo", StringComparison.OrdinalIgnoreCase) ||
+                nature.Contains("Serre", StringComparison.OrdinalIgnoreCase))
+            {
+                return BuildingArchetype.Industrial;
+            }
+
+            // 3. Modern glass/metal offices & tall commercial centers
+            if (wallMat.Contains("Verre", StringComparison.OrdinalIgnoreCase) ||
+                (usage.Contains("Commercial", StringComparison.OrdinalIgnoreCase) && height > 11f))
+            {
+                return BuildingArchetype.ModernCommercial;
+            }
+            if (usage.Contains("Commercial", StringComparison.OrdinalIgnoreCase) && area > 450f)
+            {
+                return BuildingArchetype.Industrial; // Big-box retail / supermarket
+            }
+
+            // 4. Small sheds / garages / annexes
+            if (usage.Contains("Annexe", StringComparison.OrdinalIgnoreCase) || (area < 36f && height <= 4.6f))
+            {
+                return BuildingArchetype.SmallAnnex;
+            }
+
+            // 5. Detached single-family / semi-detached houses -> white crépi with per-face door + patio
+            bool looksLikeHouse =
+                height <= 10.5f &&
+                area <= 260f &&
+                (b.HousingCount < 0 || b.HousingCount <= 2) &&
+                !wallMat.Contains("Verre", StringComparison.OrdinalIgnoreCase) &&
+                !wallMat.Contains("Métal", StringComparison.OrdinalIgnoreCase);
+
+            if (looksLikeHouse)
+            {
+                return BuildingArchetype.DetachedHouse;
+            }
+
+            // 6. Larger urban apartments / collective housing
+            if (wallMat.Contains("Brique", StringComparison.OrdinalIgnoreCase) ||
+                wallMat.Contains("Bois", StringComparison.OrdinalIgnoreCase))
+                return BuildingArchetype.UrbanWarm;
+
+            if (wallMat.Contains("Métal", StringComparison.OrdinalIgnoreCase) ||
+                (wallMat.Contains("Béton", StringComparison.OrdinalIgnoreCase) && height > 18f))
+                return BuildingArchetype.ModernCommercial;
+
+            return BuildingArchetype.UrbanLimestone;
+        }
+
+        /// <summary>
+        /// Picks the primary front edge (entry door + window) and the opposite rear edge (porte-fenêtre)
+        /// so all other edges (typically the 2 gable sides) remain plain white crépi.
+        /// </summary>
+        private static void SelectHousePrincipalEdges(List<Vector2> ring, out int entryIdx, out int patioIdx)
+        {
+            int n = ring.Count;
+            entryIdx = 0;
+            patioIdx = -1;
+
+            float bestLen = -1f;
+            for (int i = 0; i < n; i++)
+            {
+                float len = (ring[(i + 1) % n] - ring[i]).magnitude;
+                if (len > bestLen)
+                {
+                    bestLen = len;
+                    entryIdx = i;
+                }
+            }
+
+            Vector2 entryDir = (ring[(entryIdx + 1) % n] - ring[entryIdx]).normalized;
+            Vector2 entryNormal = new Vector2(entryDir.y, -entryDir.x);
+
+            // Pick the longest edge facing roughly opposite to entryEdge
+            float bestOppScore = -1f;
+            for (int i = 0; i < n; i++)
+            {
+                if (i == entryIdx) continue;
+                Vector2 e = ring[(i + 1) % n] - ring[i];
+                float len = e.magnitude;
+                if (len < 2.2f) continue;
+
+                Vector2 nrm = new Vector2(e.y, -e.x) / len;
+                float dot = Vector2.Dot(entryNormal, nrm);
+                if (dot < -0.45f)
+                {
+                    float score = len * (-dot);
+                    if (score > bestOppScore)
+                    {
+                        bestOppScore = score;
+                        patioIdx = i;
+                    }
+                }
+            }
+        }
+
+        private static bool TryAddSlopedRoof(MeshBucket bucket, List<Vector2> ring, float eaveY, bool steepHistoric)
         {
             float area = Mathf.Abs(EarCut2D.SignedArea(ring));
-            if (area < 16f || area > 1600f) return false;
+            if (area < 16f || area > 1800f) return false;
+
+            float slopeFactor = steepHistoric ? 0.42f : 0.28f;
+            float maxRidgeH = steepHistoric ? 7.5f : 4.4f;
 
             // Case A: 4-vertex buildings -> true French 4-pan hipped roof with ridge along the longer axis
             if (ring.Count == 4)
@@ -238,7 +464,6 @@ namespace GeoUnity.World3D
 
                 if (avgA >= avgB)
                 {
-                    // Ridge runs parallel to edges (p0->p1) and (p3->p2)
                     i0 = 0; i1 = 1; i2 = 2; i3 = 3;
                     midStart = (p0 + p3) * 0.5f;
                     midEnd = (p1 + p2) * 0.5f;
@@ -246,16 +471,15 @@ namespace GeoUnity.World3D
                 }
                 else
                 {
-                    // Ridge runs parallel to edges (p1->p2) and (p0->p3)
                     i0 = 1; i1 = 2; i2 = 3; i3 = 0;
                     midStart = (p1 + p0) * 0.5f;
                     midEnd = (p2 + p3) * 0.5f;
                     shortSpan = avgA;
                 }
 
-                if (shortSpan < 3.5f || shortSpan > 26f) return false;
+                if (shortSpan < 3.2f || shortSpan > 28f) return false;
 
-                float ridgeH = Mathf.Clamp(shortSpan * 0.28f, 1.4f, 4.4f);
+                float ridgeH = Mathf.Clamp(shortSpan * slopeFactor, 1.4f, maxRidgeH);
                 Vector2 rA2D = Vector2.Lerp(midStart, midEnd, 0.22f);
                 Vector2 rB2D = Vector2.Lerp(midStart, midEnd, 0.78f);
 
@@ -266,7 +490,6 @@ namespace GeoUnity.World3D
                 Vector3 rA = new Vector3(rA2D.x, eaveY + ridgeH, rA2D.y);
                 Vector3 rB = new Vector3(rB2D.x, eaveY + ridgeH, rB2D.y);
 
-                // 2 main trapezoidal slopes + 2 triangular hip ends (winding outward/upward)
                 AddRoofQuad(bucket, c0, rA, rB, c1);
                 AddRoofQuad(bucket, c2, rB, rA, c3);
                 AddRoofTri(bucket, c1, rB, c2);
@@ -287,9 +510,9 @@ namespace GeoUnity.World3D
                 float d = (ring[i] - centroid).magnitude;
                 if (d > maxRad) maxRad = d;
             }
-            if (maxRad < 2.5f || maxRad > 18f) return false;
+            if (maxRad < 2.5f || maxRad > 20f) return false;
 
-            float apexH = Mathf.Clamp(maxRad * 0.30f, 1.4f, 4.2f);
+            float apexH = Mathf.Clamp(maxRad * slopeFactor, 1.4f, maxRidgeH);
             Vector3 apex = new Vector3(centroid.x, eaveY + apexH, centroid.y);
 
             for (int i = 0; i < ring.Count; i++)
@@ -338,29 +561,13 @@ namespace GeoUnity.World3D
             return inside;
         }
 
-        private static MeshBucket PickWallBucket(BuildingData b, MeshBucket limestone, MeshBucket warm, MeshBucket modern)
+        private static MeshBucket PickRoofBucket(
+            BuildingData b, BuildingArchetype archetype, Vector2 refPos,
+            MeshBucket slate, MeshBucket terracotta, MeshBucket flat)
         {
-            if (!string.IsNullOrEmpty(b.WallMaterial))
-            {
-                if (b.WallMaterial.Contains("Brique", StringComparison.OrdinalIgnoreCase) ||
-                    b.WallMaterial.Contains("Bois", StringComparison.OrdinalIgnoreCase))
-                    return warm;
-                if (b.WallMaterial.Contains("Béton", StringComparison.OrdinalIgnoreCase) ||
-                    b.WallMaterial.Contains("Beton", StringComparison.OrdinalIgnoreCase) ||
-                    b.WallMaterial.Contains("Verre", StringComparison.OrdinalIgnoreCase) ||
-                    b.WallMaterial.Contains("Métal", StringComparison.OrdinalIgnoreCase))
-                    return modern;
-            }
-            if (!string.IsNullOrEmpty(b.Usage) &&
-                (b.Usage.Contains("Industriel", StringComparison.OrdinalIgnoreCase) ||
-                 b.Usage.Contains("Commercial", StringComparison.OrdinalIgnoreCase)))
-                return modern;
+            if (archetype == BuildingArchetype.Industrial || archetype == BuildingArchetype.ModernCommercial)
+                return flat;
 
-            return limestone;
-        }
-
-        private static MeshBucket PickRoofBucket(BuildingData b, MeshBucket slate, MeshBucket terracotta, MeshBucket flat)
-        {
             if (!string.IsNullOrEmpty(b.RoofMaterial))
             {
                 if (b.RoofMaterial.Contains("Tuile", StringComparison.OrdinalIgnoreCase))
@@ -373,6 +580,17 @@ namespace GeoUnity.World3D
                     b.RoofMaterial.Contains("Tôle", StringComparison.OrdinalIgnoreCase))
                     return flat;
             }
+
+            if (archetype == BuildingArchetype.HistoricStone)
+                return slate;
+
+            // Default houses without explicit roof material: terracotta tiles dominate in France (with slate variety)
+            if (archetype == BuildingArchetype.DetachedHouse || archetype == BuildingArchetype.SmallAnnex)
+            {
+                int h = Mathf.Abs(Mathf.RoundToInt(refPos.x * 13f + refPos.y * 31f)) % 10;
+                return h < 7 ? terracotta : slate;
+            }
+
             return slate;
         }
     }
