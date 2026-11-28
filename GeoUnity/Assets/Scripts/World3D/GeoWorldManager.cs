@@ -98,7 +98,7 @@ namespace GeoUnity.World3D
                     _worldRoot = null;
                 }
 
-                // Download DEM, Orthophoto, Buildings, Vegetation, Water, RPG Crops, and OSM Road Signs in parallel
+                // Download DEM, Orthophoto, Buildings, Vegetation, Water, Bridges, Landmarks, RPG Crops, and OSM Road Signs in parallel
                 var demTask = _dataClient.DownloadElevationGridAsync(sector, resolution: 257);
                 var orthoTask = _dataClient.DownloadOrthophotoAsync(sector, size: 2048);
                 var buildingsTask = _dataClient.DownloadBuildingsAsync(sector, maxFeatures: 12000, count =>
@@ -107,26 +107,32 @@ namespace GeoUnity.World3D
                 });
                 var vegetationTask = _dataClient.DownloadVegetationAsync(sector, maxFeatures: 2000);
                 var waterTask = _dataClient.DownloadWaterAsync(sector, maxFeatures: 1000);
+                var bridgesTask = _dataClient.DownloadBridgesAsync(sector, maxFeatures: 500);
+                var landmarksTask = _dataClient.DownloadLandmarksAsync(sector, maxFeatures: 500);
                 var cropsTask = _dataClient.DownloadCropParcelsAsync(sector, maxFeatures: 1000);
                 var signsTask = _dataClient.DownloadRoadSignsAsync(sector);
 
-                await Task.WhenAll(demTask, orthoTask, buildingsTask, vegetationTask, waterTask, cropsTask, signsTask);
+                await Task.WhenAll(demTask, orthoTask, buildingsTask, vegetationTask, waterTask, bridgesTask, landmarksTask, cropsTask, signsTask);
 
                 var grid = demTask.Result;
                 var ortho = orthoTask.Result;
                 var buildings = buildingsTask.Result;
                 var vegetation = vegetationTask.Result;
                 var water = waterTask.Result;
+                var bridges = bridgesTask.Result;
+                var landmarks = landmarksTask.Result;
                 var crops = cropsTask.Result;
                 var signs = signsTask.Result;
 
-                SetLoading(true, $"Génération 3D ({buildings.Count} bâtiments, {crops.Count} parcelles RPG, {signs.Count} panneaux/feux)...");
+                SetLoading(true, $"Génération 3D ({buildings.Count} bâtiments, {bridges.Count} ponts, {landmarks.Count} monuments/statues)...");
                 await Task.Yield();
 
                 _worldRoot = new GameObject($"GeoWorld_{Math.Round(sector.CenterLambertX)}_{Math.Round(sector.CenterLambertY)}");
                 TerrainMeshBuilder.Build(sector, grid, ortho, _worldRoot.transform);
                 WaterMeshBuilder.Build(sector, grid, water, _worldRoot.transform);
+                BridgeBuilder.Build(sector, grid, bridges, _worldRoot.transform);
                 BuildingMeshBuilder.Build(sector, grid, buildings, _worldRoot.transform);
+                LandmarkBuilder.Build(sector, grid, landmarks, _worldRoot.transform);
                 VegetationBuilder.Build(sector, grid, vegetation, _worldRoot.transform, out int treeCount);
                 CropFieldBuilder.Build(sector, grid, crops, _worldRoot.transform, out int cropCount);
                 RoadSignBuilder.Build(sector, grid, signs, _worldRoot.transform);
@@ -147,7 +153,7 @@ namespace GeoUnity.World3D
                 {
                     worldInfoText.text =
                         $"Secteur 2 km × 2 km  |  {sector.CenterLat:F4}° N, {sector.CenterLon:F4}° E\n" +
-                        $"Bâtiments : {buildings.Count}  |  Arbres : {treeCount}  |  RPG : {crops.Count} parcelles  |  Feux/Panneaux : {signs.Count}\n" +
+                        $"Bâtiments : {buildings.Count}  |  Ponts : {bridges.Count}  |  Monuments : {landmarks.Count}  |  Arbres : {treeCount}  |  RPG : {crops.Count}\n" +
                         $"Clic gauche / ZQSD : Déplacer  ·  Clic droit : Orbiter  ·  Molette : Zoom  ·  R : Recentrer";
                 }
 
@@ -155,7 +161,7 @@ namespace GeoUnity.World3D
                 if (mapSelectorCanvas != null) mapSelectorCanvas.SetActive(false);
                 if (worldHudCanvas != null) worldHudCanvas.SetActive(true);
 
-                Debug.Log($"[GeoWorldManager] Built 3D sector: {buildings.Count} buildings, {treeCount} trees, {crops.Count} RPG parcels ({cropCount} elements), {signs.Count} road signs, {water.Count} water.");
+                Debug.Log($"[GeoWorldManager] Built 3D sector: {buildings.Count} buildings, {bridges.Count} bridges, {landmarks.Count} landmarks, {treeCount} trees, {crops.Count} RPG parcels ({cropCount} elements), {signs.Count} road signs, {water.Count} water.");
             }
             catch (Exception ex)
             {
